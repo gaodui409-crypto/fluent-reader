@@ -26,6 +26,7 @@ import { RuleEditor } from "./rules/rule-editor"
 import { RuleList } from "./rules/rule-list"
 import { RulePreview } from "./rules/rule-preview"
 import { useStyles } from "./rules/styles"
+import { ArchiveRules } from "../personal/organize"
 
 function RulesIntro() {
     const classes = useStyles()
@@ -121,6 +122,7 @@ const RulesTab: React.FC = () => {
 
     return (
         <div className={`tab-body ${classes.root}`}>
+            <ArchiveRules />
             <RuleTargetPicker
                 target={target}
                 sources={sources}
@@ -139,6 +141,7 @@ const RulesTab: React.FC = () => {
                         <RuleEditor
                             key={`${getRuleTargetKey(target)}:${editIndex}`}
                             rule={rules[editIndex]}
+                            target={target}
                             saving={saving}
                             onSave={saveRule}
                             onCancel={

@@ -93,10 +93,22 @@ export type RuleTarget =
     | { type: "all" }
 
 export interface StoredRule {
+    enabled?: boolean
+    conditions?: RuleCondition[]
+    logic?: "all" | "any"
+    highlight?: string
+    tags?: string[]
     filter: number
     search: string
     match: boolean
     actions: string[]
+}
+
+export interface RuleCondition {
+    field: "title" | "body" | "author" | "link"
+    operator: "contains" | "notContains" | "regex"
+    value: string
+    caseSensitive?: boolean
 }
 
 export type RuleTargetKey = "all" | `source:${number}` | `group:${number}`
@@ -114,6 +126,15 @@ export function getRuleTargetKey(target: RuleTarget): RuleTargetKey {
 }
 
 export type SchemaTypes = {
+    linuxDoRanking?: import("./linuxdo").RankingState
+    readingPreferences: import("./reading-preferences").ReadingPreferences
+    ai: import("./personal-types").AIConfig & {
+        encryptedKey: string
+        lastBriefingDay: string
+    }
+    sourcePreferences: import("./source-preferences").PreferenceOverrides
+    sourceRulesVersion: number
+    personal: import("./personal-types").PersonalSettings
     version: string
     theme: ThemeSettings
     pac: string

@@ -1,9 +1,17 @@
 import * as React from "react"
-import { closeContextMenu } from "../scripts/models/app"
+import intl from "react-intl-universal"
+import { closeContextMenu, refreshIfDue } from "../scripts/models/app"
 import Page from "./page"
 import { Menu } from "./menu"
 import Nav from "./nav"
 import Settings from "./settings"
+import FullSearch from "./personal/search"
+import SourceSettings from "./personal/source-settings"
+import { Briefings } from "./personal/ai"
+import TagsEditor from "./personal/tags"
+import OrganizePanel from "./personal/organize"
+import { showItemFromId } from "../scripts/models/page"
+import { loadLibrary, expireUnread } from "../scripts/models/library"
 import { useAppDispatch, useAppSelector } from "../scripts/reducer"
 import { ContextMenu } from "./context-menu"
 import LogMenu from "./log-menu"
@@ -18,6 +26,8 @@ import { CUSTOM_STYLE_HOOKS, createAppTheme } from "./utils/theme"
 import { CustomStyleHooksProvider_unstable as CustomStyleHooksProvider } from "@fluentui/react-shared-contexts"
 import { getFontFamilyForLocale } from "../scripts/settings"
 import { useArticleOverlayOpen } from "./utils/hooks/useArticleOverlayOpen"
+import { ArticleSelectionBar } from "./personal/organize"
+import { FolderManager } from "./personal/folders"
 
 const useClasses = makeStyles({
     root: {
@@ -43,12 +53,59 @@ const useClasses = makeStyles({
 const Root: React.FC = () => {
     const dispatch = useAppDispatch()
     const locale = useAppSelector(s => s.app.locale)
+    const ready = useAppSelector(
+        s => s.app.sourceInit && !s.app.fetchingItems && !s.app.syncing
+    )
     const articleOverlayOpen = useArticleOverlayOpen()
+    const preferences = useAppSelector(s => s.preferences)
+    useEffect(() => {
+        const refresh = () => {
+            void dispatch(refreshIfDue()).catch(console.error)
+        }
+        const online = () => {
+            void dispatch(refreshIfDue(true)).catch(console.error)
+        }
+        const focus = (event: CustomEvent<{ focused: boolean }>) => {
+            if (event.detail.focused) refresh()
+        }
+        window.addEventListener("focus", refresh)
+        window.addEventListener("online", online)
+        window.addEventListener("app-window-focus-change", focus)
+        return () => {
+            window.removeEventListener("focus", refresh)
+            window.removeEventListener("online", online)
+            window.removeEventListener("app-window-focus-change", focus)
+        }
+    }, [dispatch])
 
     const classes = useClasses()
     const [isDarkMode, setIsDarkMode] = useState(() =>
         globalThis.settings.shouldUseDarkColors()
     )
+    useEffect(() => {
+        const load = () => {
+            void dispatch(loadLibrary()).catch(console.error)
+        }
+        load()
+        return window.personal.onChanged(load)
+    }, [dispatch])
+    useEffect(() => {
+        if (!ready) return
+        const expire = () => {
+            void dispatch(expireUnread()).catch(error =>
+                window.utils.showErrorBox(
+                    intl.get("personal.failed"),
+                    String(error)
+                )
+            )
+        }
+        expire()
+        const timer = setInterval(expire, 3600000)
+        return () => clearInterval(timer)
+    }, [dispatch, ready, preferences])
+    useEffect(() => {
+        return window.personal.onOpenArticle(id => dispatch(showItemFromId(id)))
+    }, [dispatch])
     useEffect(() => {
         globalThis.settings.addThemeUpdateListener(shouldDark => {
             setIsDarkMode(shouldDark)
@@ -83,10 +140,17 @@ const Root: React.FC = () => {
                             }
                             onMouseDown={() => dispatch(closeContextMenu())}>
                             <Nav />
+                            <ArticleSelectionBar />
                             <Page />
                             <LogMenu />
                             <Menu />
                             <Settings />
+                            <FullSearch />
+                            <SourceSettings />
+                            <TagsEditor />
+                            <OrganizePanel />
+                            <FolderManager />
+                            <Briefings />
                             <ContextMenu />
                         </div>
                     </CustomStyleHooksProvider>

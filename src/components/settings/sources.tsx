@@ -23,7 +23,9 @@ import {
     SourceOpenTarget,
 } from "../../scripts/models/source"
 import { urlTest } from "../../scripts/utils"
+import { FeedDiscovery, SourceHealthPanel } from "../personal/subscriptions"
 import DangerButton from "../utils/danger-button"
+import { openSourcePreferences } from "../../scripts/models/preferences"
 
 type SourcesTabProps = {
     sources: SourceState
@@ -235,37 +237,26 @@ class SourcesTab extends React.Component<SourcesTabProps, SourcesTabState> {
                 </Stack.Item>
             </Stack>
 
-            <form onSubmit={this.addSource}>
-                <Label htmlFor="newUrl">{intl.get("sources.add")}</Label>
-                <Stack horizontal>
-                    <Stack.Item grow>
-                        <TextField
-                            onGetErrorMessage={v =>
-                                urlTest(v.trim())
-                                    ? ""
-                                    : intl.get("sources.badUrl")
-                            }
-                            validateOnLoad={false}
-                            placeholder={intl.get("sources.inputUrl")}
-                            value={this.state.newUrl}
-                            id="newUrl"
-                            name="newUrl"
-                            onChange={this.handleInputChange}
-                        />
-                    </Stack.Item>
-                    <Stack.Item>
-                        <PrimaryButton
-                            disabled={!urlTest(this.state.newUrl.trim())}
-                            type="submit"
-                            text={intl.get("add")}
-                        />
-                    </Stack.Item>
-                </Stack>
-            </form>
+            <FeedDiscovery addSource={this.props.addSource} />
+            <SourceHealthPanel />
 
+            {(this.state.selectedSource || this.state.selectedSources) && (
+                <DefaultButton
+                    onClick={() =>
+                        openSourcePreferences({
+                            sids: this.state.selectedSources
+                                ? this.state.selectedSources.map(s => s.sid)
+                                : [this.state.selectedSource.sid],
+                        })
+                    }>
+                    {intl.get("personal.sourceSettings")}
+                </DefaultButton>
+            )}
             <DetailsList
                 compact={Object.keys(this.props.sources).length >= 10}
-                items={Object.values(this.props.sources)}
+                items={Object.values(this.props.sources).filter(
+                    source => !source.archived
+                )}
                 columns={this.columns()}
                 getKey={s => s.sid}
                 setKey="selected"

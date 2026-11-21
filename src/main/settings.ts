@@ -1,5 +1,9 @@
 import Store from "electron-store"
 import {
+    defaultReadingPreferences,
+    ReadingPreferences,
+} from "../reading-preferences"
+import {
     SchemaTypes,
     SourceGroup,
     ViewType,
@@ -14,11 +18,55 @@ import {
     ARTICLE_OVERLAY_MIN_WIDTH,
     LIST_VIEW_MIN_WIDTH,
 } from "../schema-types"
-import { ipcMain, session, nativeTheme, app } from "electron"
+import { ipcMain, session, nativeTheme, app, dialog } from "electron"
 import { WindowManager } from "./window"
 import { transformLovefieldRules } from "./utils"
+import { applyPendingRestore } from "./restore"
+import { validateConditions } from "../rule-conditions"
+import { migrateStoredRules } from "../stored-rules"
+import { protectServiceConfig, readServiceConfig } from "./service-secrets"
 
+try {
+    applyPendingRestore(app.getPath("userData"))
+} catch (error) {
+    app.whenReady().then(() =>
+        dialog.showErrorBox(
+            app.getLocale().startsWith("zh")
+                ? "备份恢复未完成，已保留原有数据。"
+                : "Backup restore failed. Existing data has been preserved.",
+            String(error)
+        )
+    )
+}
 export const store = new Store<SchemaTypes>({ cache: true })
+
+ipcMain.on("get-reading-preferences", event => {
+    event.returnValue = {
+        ...defaultReadingPreferences,
+        ...store.get("readingPreferences", defaultReadingPreferences),
+    }
+})
+ipcMain.handle("set-reading-preferences", (_, value: ReadingPreferences) => {
+    const collections: ReadingPreferences["collections"] = {}
+    for (const key of ["later:", "starred:"]) {
+        const pref = value.collections?.[key]
+        if (!pref) continue
+        collections[key] = {
+            view:
+                Number.isInteger(pref.view) && pref.view >= 0 && pref.view <= 3
+                    ? pref.view
+                    : undefined,
+            openTarget: [0, 1, 3].includes(pref.openTarget)
+                ? pref.openTarget
+                : undefined,
+        }
+    }
+    store.set("readingPreferences", {
+        hoverSummary: !!value.hoverSummary,
+        collapseList: !!value.collapseList,
+        collections,
+    })
+})
 
 const GROUPS_STORE_KEY = "sourceGroups"
 function nextGroupId(): number {
@@ -101,7 +149,7 @@ function setProxy(address = null) {
     if (getProxyStatus()) {
         let rules = { pacScript: address }
         session.defaultSession.setProxy(rules)
-        session.fromPartition("sandbox").setProxy(rules)
+        session.fromPartition("persist:sandbox").setProxy(rules)
     }
 }
 ipcMain.on("get-proxy-status", event => {
@@ -199,9 +247,11 @@ for (const [key, channel, minimum] of [
 
 const FETCH_INTEVAL_STORE_KEY = "fetchInterval"
 ipcMain.on("get-fetch-interval", event => {
-    event.returnValue = store.get(FETCH_INTEVAL_STORE_KEY, 0)
+    event.returnValue = store.get(FETCH_INTEVAL_STORE_KEY, 10)
 })
 ipcMain.handle("set-fetch-interval", (_, interval: number) => {
+    if (!Number.isInteger(interval) || interval < 0 || interval > 1440)
+        throw new Error("Invalid automatic fetch interval.")
     store.set(FETCH_INTEVAL_STORE_KEY, interval)
 })
 
@@ -215,12 +265,34 @@ ipcMain.handle("set-search-engine", (_, engine: SearchEngines) => {
 
 const SERVICE_CONFIGS_STORE_KEY = "serviceConfigs"
 ipcMain.on("get-service-configs", event => {
-    event.returnValue = store.get(SERVICE_CONFIGS_STORE_KEY, {
-        type: SyncService.None,
-    })
+    try {
+        event.returnValue = readServiceConfig(store)
+    } catch (error) {
+        event.returnValue = { type: SyncService.None }
+        const zh = store.get("locale", "").startsWith("zh")
+        // Return immediately so an unavailable key cannot block renderer startup.
+        setTimeout(
+            () =>
+                dialog.showErrorBox(
+                    zh
+                        ? "同步服务凭据需要重新输入"
+                        : "Re-enter synchronization credentials",
+                    zh
+                        ? "无法读取此系统账号加密的服务凭据。请在选项 → 服务中重新配置；订阅和文章已保留。\n" +
+                              String(error)
+                        : String(error)
+                ),
+            0
+        )
+    }
 })
 ipcMain.handle("set-service-configs", (_, configs: ServiceConfigs) => {
-    store.set(SERVICE_CONFIGS_STORE_KEY, configs)
+    try {
+        store.set(SERVICE_CONFIGS_STORE_KEY, protectServiceConfig(configs))
+        return { ok: true }
+    } catch (error) {
+        return { ok: false, error: String(error) }
+    }
 })
 
 const FILTER_TYPE_STORE_KEY = "filterType"
@@ -259,11 +331,48 @@ ipcMain.handle(
 const SOURCE_RULES_STORE_KEY = "sourceRules"
 
 ipcMain.on("get-all-rules", event => {
-    event.returnValue = store.get(SOURCE_RULES_STORE_KEY, {})
+    try {
+        const rules = migrateStoredRules(store.get(SOURCE_RULES_STORE_KEY, {}))
+        if (store.get("sourceRulesVersion", 1) < 2) {
+            store.set(SOURCE_RULES_STORE_KEY, rules)
+            store.set("sourceRulesVersion", 2)
+        }
+        event.returnValue = { ok: true, rules }
+    } catch (error) {
+        event.returnValue = { ok: false, error: String(error) }
+    }
 })
 ipcMain.handle(
     "set-rules-for-target",
     (_, target: RuleTarget, rules: StoredRule[]) => {
+        if (!Array.isArray(rules) || rules.length > 500)
+            throw new Error("Invalid rule list.")
+        for (const rule of rules) {
+            if (rule.conditions) validateConditions(rule.conditions)
+            if (rule.highlight && !/^#[0-9a-f]{6}$/i.test(rule.highlight))
+                throw new Error("Invalid highlight color.")
+            if (
+                rule.tags &&
+                (!Array.isArray(rule.tags) ||
+                    rule.tags.length > 50 ||
+                    rule.tags.some(
+                        tag =>
+                            typeof tag !== "string" ||
+                            !tag.trim() ||
+                            tag.length > 100
+                    ))
+            )
+                throw new Error("Invalid rule tags.")
+            if (
+                !Array.isArray(rule.actions) ||
+                rule.actions.some(
+                    action =>
+                        typeof action !== "string" ||
+                        !/^[rshnlo](-true|-false)?$/.test(action)
+                )
+            )
+                throw new Error("Invalid rule action.")
+        }
         const key = getRuleTargetKey(target)
         // Keep the read and write together in main so independent targets cannot
         // overwrite each other using stale renderer snapshots.

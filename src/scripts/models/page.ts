@@ -7,13 +7,21 @@ import {
     initFeeds,
     FeedActionTypes,
     INIT_FEED,
+    initFeedSuccess,
+    RSSFeed,
 } from "./feed"
+import { database, itemsTable } from "../db"
+import { eq } from "drizzle-orm"
 import { getWindowBreakpoint, AppThunk, ActionStatus } from "../utils"
 import { RSSItem, markRead } from "./item"
 import { SourceActionTypes, DELETE_SOURCE } from "./source"
 import { toggleMenu } from "./app"
 import { ViewType, ViewConfigs } from "../../schema-types"
+import { isLinuxDo } from "../../linuxdo"
 import { RootState } from "../reducer"
+import intl from "react-intl-universal"
+import { collectionKey } from "../../reading-preferences"
+import { saveReadingPreferences } from "./reading"
 
 export const SELECT_PAGE = "SELECT_PAGE"
 export const SWITCH_VIEW = "SWITCH_VIEW"
@@ -39,6 +47,7 @@ interface SelectPageAction {
     sids?: number[]
     menuKey?: string
     title?: string
+    viewType?: ViewType
 }
 
 interface SwitchViewAction {
@@ -60,6 +69,7 @@ interface ShowItemAction {
 interface ApplyFilterAction {
     type: typeof APPLY_FILTER
     filter: FeedFilter
+    feedId: string
 }
 
 interface DismissItemAction {
@@ -83,9 +93,13 @@ export function selectAllArticles(init = false): AppThunk {
         dispatch({
             type: SELECT_PAGE,
             keepMenu: getWindowBreakpoint(),
-            filter: getState().page.filter,
+            filter: getState().feeds[ALL]?.filter || new FeedFilter(),
             pageType: PageType.AllArticles,
-            init: init,
+            init:
+                init ||
+                getState().page.feedId !== ALL ||
+                !!getState().page.filter.tag ||
+                !!getState().page.filter.laterOnly,
         } as PageActionTypes)
     }
 }
@@ -101,10 +115,18 @@ export function selectSources(
                 type: SELECT_PAGE,
                 pageType: PageType.Sources,
                 keepMenu: getWindowBreakpoint(),
-                filter: getState().page.filter,
+                filter: getState().feeds[menuKey]?.filter || new FeedFilter(),
                 sids: sids,
                 menuKey: menuKey,
                 title: title,
+                viewType:
+                    getState().reading.collections[menuKey]?.view ??
+                    (sids.length &&
+                    sids.every(sid =>
+                        isLinuxDo(getState().sources[sid]?.url || "")
+                    )
+                        ? ViewType.List
+                        : undefined),
                 init: true,
             } as PageActionTypes)
         }
@@ -112,12 +134,86 @@ export function selectSources(
 }
 
 export function switchView(viewType: ViewType): AppThunk {
-    return dispatch => {
-        globalThis.settings.setDefaultView(viewType)
+    return (dispatch, getState) => {
+        const key = collectionKey(getState().app.menuKey)
+        if (key) {
+            const collections = { ...getState().reading.collections }
+            collections[key] = { ...collections[key], view: viewType }
+            void dispatch(saveReadingPreferences({ collections }))
+        } else globalThis.settings.setDefaultView(viewType)
         dispatch({
             type: SWITCH_VIEW,
             viewType: viewType,
         })
+    }
+}
+
+export function selectCollection(
+    collection: "tag" | "later" | "starred" | "folder" | "library",
+    tag = "",
+    label = ""
+): AppThunk {
+    return async (dispatch, getState) => {
+        const sids = Object.values(getState().sources).map(source => source.sid)
+        const title =
+            label ||
+            (collection === "tag"
+                ? "#" + tag
+                : collection === "later"
+                ? intl.get("personal.readLater")
+                : intl.get("personal.favorites"))
+        const filter: FeedFilter = getState().feeds[collection + ":" + tag]
+            ?.filter || {
+            ...new FeedFilter(
+                FilterType.Default |
+                    FilterType.CaseInsensitive |
+                    FilterType.KeywordSearch
+            ),
+            tag: collection === "tag" ? tag : undefined,
+            laterOnly: collection === "later",
+            library: true,
+            folderId: collection === "folder" ? Number(tag) : undefined,
+            unfiled: collection === "library",
+        }
+        if (collection === "starred") filter.type &= ~FilterType.ShowNotStarred
+        dispatch({
+            type: SELECT_PAGE,
+            pageType: PageType.Sources,
+            sids,
+            menuKey: collection + ":" + tag,
+            viewType:
+                getState().reading.collections[
+                    collectionKey(collection + ":" + tag)
+                ]?.view ?? globalThis.settings.getDefaultView(),
+            title,
+            keepMenu: getWindowBreakpoint(),
+            filter,
+            init: true,
+        } as PageActionTypes)
+        await dispatch(initFeeds())
+    }
+}
+
+export function showArchiveMatches(
+    ids: number[],
+    title = "筛选结果"
+): AppThunk {
+    return async (dispatch, getState) => {
+        dispatch({
+            type: SELECT_PAGE,
+            pageType: PageType.Sources,
+            sids: Object.values(getState().sources).map(s => s.sid),
+            menuKey: "archive-results",
+            title,
+            keepMenu: getWindowBreakpoint(),
+            filter: {
+                ...new FeedFilter(FilterType.Default),
+                library: true,
+                ids,
+            },
+            init: true,
+        } as PageActionTypes)
+        await dispatch(initFeeds())
     }
 }
 
@@ -138,6 +234,7 @@ export function showItem(feedId: string, item: RSSItem): AppThunk {
             state.items.hasOwnProperty(item._id) &&
             state.sources.hasOwnProperty(item.source)
         ) {
+            void window.personal.opened?.(item._id).catch(console.error)
             dispatch({
                 type: SHOW_ITEM,
                 feedId: feedId,
@@ -147,11 +244,31 @@ export function showItem(feedId: string, item: RSSItem): AppThunk {
     }
 }
 export function showItemFromId(iid: number): AppThunk {
-    return (dispatch, getState) => {
-        const state = getState()
-        const item = state.items[iid]
-        if (!item.hasRead) dispatch(markRead(item))
-        if (item) dispatch(showItem(null, item))
+    return async (dispatch, getState) => {
+        try {
+            let item = getState().items[iid]
+            if (!item) {
+                const [row] = await database
+                    .select()
+                    .from(itemsTable)
+                    .where(eq(itemsTable._id, iid))
+                if (!row) throw new Error(intl.get("personal.missingArticle"))
+                item = row as unknown as RSSItem
+                dispatch(
+                    initFeedSuccess(
+                        new RSSFeed("PERSONAL_OPEN", [item.source]),
+                        [item]
+                    )
+                )
+            }
+            if (!item.hasRead) await dispatch(markRead(item))
+            dispatch(showItem(null, getState().items[iid]))
+        } catch (error) {
+            window.utils.showErrorBox(
+                intl.get("personal.failed"),
+                String(error)
+            )
+        }
     }
 }
 
@@ -233,17 +350,21 @@ export function showOffsetItem(offset: number): AppThunk<Promise<void>> {
     }
 }
 
-const applyFilterDone = (filter: FeedFilter): PageActionTypes => ({
+const applyFilterDone = (
+    filter: FeedFilter,
+    feedId: string
+): PageActionTypes => ({
     type: APPLY_FILTER,
-    filter: filter,
+    filter,
+    feedId,
 })
 
-function applyFilter(filter: FeedFilter): AppThunk {
+export function applyFilter(filter: FeedFilter): AppThunk {
     return (dispatch, getState) => {
         const oldFilterType = getState().page.filter.type
         if (filter.type !== oldFilterType)
             globalThis.settings.setFilterType(filter.type)
-        dispatch(applyFilterDone(filter))
+        dispatch(applyFilterDone(filter, getState().page.feedId))
         dispatch(initFeeds(true))
     }
 }
@@ -286,6 +407,26 @@ export function performSearch(query: string): AppThunk {
     }
 }
 
+export function configureSearch(type: FilterType): AppThunk {
+    return (dispatch, getState) => {
+        const previous = getState().page.filter
+        const mask =
+            FilterType.KeywordSearch |
+            FilterType.MatchAll |
+            FilterType.ExcludeSearch |
+            FilterType.FullSearch |
+            FilterType.BodySearch |
+            FilterType.CreatorSearch |
+            FilterType.CaseInsensitive
+        dispatch(
+            applyFilter({
+                ...previous,
+                type: (previous.type & ~mask) | (type & mask),
+            })
+        )
+    }
+}
+
 export class PageState {
     viewType = globalThis.settings.getDefaultView()
     viewConfigs = globalThis.settings.getViewConfigs(
@@ -309,13 +450,28 @@ export function pageReducer(
                     return {
                         ...state,
                         feedId: ALL,
+                        viewType: globalThis.settings.getDefaultView(),
+                        viewConfigs: globalThis.settings.getViewConfigs(
+                            globalThis.settings.getDefaultView()
+                        ),
+                        searchOn: !!action.filter.search,
                         itemId: null,
+                        filter: action.filter,
                     }
                 case PageType.Sources:
                     return {
                         ...state,
-                        feedId: SOURCE,
+                        feedId: action.menuKey || SOURCE,
+                        viewType:
+                            action.viewType ??
+                            globalThis.settings.getDefaultView(),
+                        viewConfigs: globalThis.settings.getViewConfigs(
+                            action.viewType ??
+                                globalThis.settings.getDefaultView()
+                        ),
+                        searchOn: !!action.filter.search,
                         itemId: null,
+                        filter: action.filter,
                     }
                 default:
                     return state

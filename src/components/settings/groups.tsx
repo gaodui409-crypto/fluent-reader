@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Dropdown as SourceDropdown } from "@fluentui/react"
 import { useEffect, useState } from "react"
 import intl from "react-intl-universal"
 import {
@@ -25,6 +26,7 @@ import { GroupEditor } from "./groups/group-editor"
 import { GroupList } from "./groups/group-list"
 import { GroupNameForm, SourceGroupPicker } from "./groups/group-actions"
 import { useGroupStyles } from "./groups/styles"
+import { openSourcePreferences } from "../../scripts/models/preferences"
 
 const useStyles = makeStyles({
     root: { display: "flex", flexDirection: "column", gap: "16px" },
@@ -44,6 +46,7 @@ const GroupsTab: React.FC = () => {
     )
     const [selectedGid, setSelectedGid] = useState<number>(null)
     const [managing, setManaging] = useState(false)
+    const [addingSources, setAddingSources] = useState<number[]>([])
     const selectedGroup = groups.find(group => group.gid === selectedGid)
 
     useEffect(() => {
@@ -61,6 +64,52 @@ const GroupsTab: React.FC = () => {
 
     return (
         <div className={`tab-body ${classes.root}`}>
+            <Text>{intl.get("organize.groupHint")}</Text>
+            {selectedGroup?.isMultiple && (
+                <>
+                    <SourceDropdown
+                        multiSelect
+                        label={intl.get("organize.addSources")}
+                        selectedKeys={addingSources}
+                        options={Object.values(sources)
+                            .filter(
+                                source =>
+                                    !selectedGroup.sids.includes(source.sid)
+                            )
+                            .map(source => ({
+                                key: source.sid,
+                                text: source.name,
+                            }))}
+                        onChange={(_, option) =>
+                            setAddingSources(current =>
+                                option.selected
+                                    ? [...current, Number(option.key)]
+                                    : current.filter(id => id !== option.key)
+                            )
+                        }
+                    />
+                    <Button
+                        disabled={disabled || !addingSources.length}
+                        onClick={() => {
+                            addingSources.forEach(sid =>
+                                dispatch(
+                                    addSourceToGroup(selectedGroup.gid, sid)
+                                )
+                            )
+                            setAddingSources([])
+                        }}>
+                        {intl.get("organize.addToGroup")}
+                    </Button>
+                </>
+            )}
+            {selectedGroup?.isMultiple && (
+                <Button
+                    onClick={() =>
+                        openSourcePreferences({ gid: selectedGroup.gid })
+                    }>
+                    {intl.get("personal.groupSettings")}
+                </Button>
+            )}
             {managing && selectedGroup?.isMultiple ? (
                 <GroupEditor
                     key={selectedGroup.gid}
@@ -100,8 +149,8 @@ const GroupsTab: React.FC = () => {
                         groups={groups}
                         disabled={disabled}
                         onCreate={name => {
-                            dispatch(createSourceGroup(name))
-                            setSelectedGid(null)
+                            setSelectedGid(dispatch(createSourceGroup(name)))
+                            setAddingSources([])
                         }}
                     />
                     <GroupList

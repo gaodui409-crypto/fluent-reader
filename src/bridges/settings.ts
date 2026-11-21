@@ -12,6 +12,13 @@ import {
 import { ipcRenderer } from "electron"
 
 const settingsBridge = {
+    getReadingPreferences:
+        (): import("../reading-preferences").ReadingPreferences =>
+            ipcRenderer.sendSync("get-reading-preferences"),
+    setReadingPreferences: (
+        preferences: import("../reading-preferences").ReadingPreferences
+    ): Promise<void> =>
+        ipcRenderer.invoke("set-reading-preferences", preferences),
     allocateGroupId: (): number => {
         return ipcRenderer.sendSync("allocate-group-id")
     },
@@ -105,8 +112,8 @@ const settingsBridge = {
     getFetchInterval: (): number => {
         return ipcRenderer.sendSync("get-fetch-interval")
     },
-    setFetchInterval: (interval: number) => {
-        ipcRenderer.invoke("set-fetch-interval", interval)
+    setFetchInterval: (interval: number): Promise<void> => {
+        return ipcRenderer.invoke("set-fetch-interval", interval)
     },
 
     getSearchEngine: (): SearchEngines => {
@@ -119,8 +126,9 @@ const settingsBridge = {
     getServiceConfigs: (): ServiceConfigs => {
         return ipcRenderer.sendSync("get-service-configs")
     },
-    setServiceConfigs: (configs: ServiceConfigs) => {
-        ipcRenderer.invoke("set-service-configs", configs)
+    setServiceConfigs: async (configs: ServiceConfigs) => {
+        const reply = await ipcRenderer.invoke("set-service-configs", configs)
+        if (!reply.ok) throw new Error(reply.error)
     },
 
     getFilterType: (): number => {
@@ -138,7 +146,9 @@ const settingsBridge = {
     },
 
     getAllRules: (): StoredRules => {
-        return ipcRenderer.sendSync("get-all-rules")
+        const reply = ipcRenderer.sendSync("get-all-rules")
+        if (!reply.ok) throw new Error(reply.error)
+        return reply.rules
     },
     setRulesForTarget: (
         target: RuleTarget,

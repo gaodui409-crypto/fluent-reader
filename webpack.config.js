@@ -11,7 +11,11 @@ module.exports = [
         target: "electron-main",
         externals: {
             "better-sqlite3": "commonjs better-sqlite3",
+            "@jocmp/mercury-parser": "commonjs @jocmp/mercury-parser",
         },
+        // Text extraction never renders a canvas. Linkedom's optional native
+        // canvas dependency is intentionally excluded from the main bundle.
+        resolve: { fallback: { canvas: false } },
         module: {
             rules: [
                 {
@@ -36,7 +40,10 @@ module.exports = [
     {
         mode: "production",
         stats: "minimal",
-        entry: "./src/preload.ts",
+        entry: {
+            "preload": "./src/preload.ts",
+            "offline-preload": "./src/offline-preload.ts",
+        },
         target: "electron-preload",
         module: {
             rules: [
@@ -52,7 +59,7 @@ module.exports = [
         },
         output: {
             path: __dirname + "/dist",
-            filename: "preload.js",
+            filename: "[name].js",
         },
     },
     {

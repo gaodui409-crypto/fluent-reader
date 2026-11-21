@@ -15,9 +15,20 @@ import CompactCard from "../cards/compact-card"
 import { Card } from "../cards/card"
 import { useFeedTabStop } from "../utils/hooks/useFeedTabStop"
 import { FeedEnd } from "./feed-end"
+import { useFeedPosition } from "../utils/hooks/useFeedPosition"
 
 const ListFeed: React.FC<FeedProps> = props => {
     const { elementRef, onPagesUpdated } = useFeedTabStop()
+    useFeedPosition(
+        elementRef,
+        props.feed._id +
+            ":" +
+            props.viewType +
+            ":" +
+            JSON.stringify(props.filter),
+        props.feed.loaded,
+        props.items.length
+    )
     const onRenderItem = (item: RSSItem) => {
         const cardProps = {
             feedId: props.feed._id,

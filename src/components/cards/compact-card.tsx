@@ -3,6 +3,7 @@ import { Card } from "./card"
 import CardInfo from "./info"
 import Time from "../utils/time"
 import Highlights from "./highlights"
+import { TranslatedTitle } from "../personal/ai"
 import { SourceTextDirection } from "../../scripts/models/source"
 
 const className = (props: Card.Props) => {
@@ -21,11 +22,7 @@ const CompactCard: React.FunctionComponent<Card.Props> = props => (
         <CardInfo source={props.source} item={props.item} hideTime />
         <div className="data">
             <span className="title">
-                <Highlights
-                    text={props.item.title}
-                    filter={props.filter}
-                    title
-                />
+                <TranslatedTitle item={props.item} filter={props.filter} />
             </span>
             <span className="snippet">
                 <Highlights text={props.item.snippet} filter={props.filter} />

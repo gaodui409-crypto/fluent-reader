@@ -27,6 +27,8 @@ import {
 } from "@fluentui/react-components"
 import { makeStyles, mergeClasses } from "@griffel/react"
 import { DangerButton } from "../utils/DangerButton"
+import { useAppDispatch, useAppSelector } from "../../scripts/reducer"
+import { saveReadingPreferences } from "../../scripts/models/reading"
 
 type AppTabProps = {
     setLanguage: (option: string) => void
@@ -53,6 +55,8 @@ function AppTab({
     importAll,
 }: AppTabProps) {
     const classes = useStyles()
+    const dispatch = useAppDispatch()
+    const hoverSummary = useAppSelector(s => s.reading.hoverSummary)
     const [locale, setLocale] = useState(() =>
         window.settings.getLocaleSettings()
     )
@@ -177,6 +181,15 @@ function AppTab({
                 </Dropdown>
             </Field>
 
+            <Switch
+                label={intl.get("organize.hoverSummary")}
+                checked={hoverSummary}
+                onChange={(_, data) =>
+                    void dispatch(
+                        saveReadingPreferences({ hoverSummary: data.checked })
+                    )
+                }
+            />
             <Field label={intl.get("app.theme")}>
                 <RadioGroup
                     value={theme}
@@ -221,6 +234,7 @@ function AppTab({
                         </Option>
                     ))}
                 </Dropdown>
+                <Text size={200}>{intl.get("refresh.settingsHelp")}</Text>
             </Field>
 
             <Field label={intl.get("searchEngine.name")}>

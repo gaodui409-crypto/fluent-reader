@@ -16,6 +16,8 @@ import { importOPML, exportOPML } from "../../scripts/models/group"
 import { AppDispatch, validateFavicon } from "../../scripts/utils"
 import { saveSettings, toggleSettings } from "../../scripts/models/app"
 import { SyncService } from "../../schema-types"
+import { resolveSourcePreferences } from "../../source-preferences"
+import { savePreferences } from "../../scripts/models/preferences"
 
 const getSources = (state: RootState) => state.sources
 const getServiceOn = (state: RootState) =>
@@ -23,9 +25,31 @@ const getServiceOn = (state: RootState) =>
 const getSIDs = (state: RootState) => state.app.settings.sids
 
 const mapStateToProps = createSelector(
-    [getSources, getServiceOn, getSIDs],
-    (sources, serviceOn, sids) => ({
-        sources: sources,
+    [
+        getSources,
+        getServiceOn,
+        getSIDs,
+        (state: RootState) => state.groups,
+        (state: RootState) => state.preferences,
+    ],
+    (sources, serviceOn, sids, groups, preferences) => ({
+        sources: Object.fromEntries(
+            Object.entries(sources).map(([id, source]) => {
+                const effective = resolveSourcePreferences(
+                    source,
+                    groups,
+                    preferences
+                )
+                return [
+                    id,
+                    {
+                        ...source,
+                        openTarget: effective.openTarget,
+                        fetchFrequency: effective.fetchFrequency,
+                    },
+                ]
+            })
+        ),
         serviceOn: serviceOn,
         sids: sids,
     })
@@ -51,16 +75,31 @@ const mapDispatchToProps = (dispatch: AppDispatch) => {
             source: RSSSource,
             target: SourceOpenTarget
         ) => {
-            dispatch(
-                updateSource({ ...source, openTarget: target } as RSSSource)
+            void dispatch(
+                savePreferences(
+                    { sids: [source.sid] },
+                    { openTarget: target },
+                    []
+                )
+            ).catch(error =>
+                window.utils.showErrorBox(
+                    intl.get("personal.failed"),
+                    String(error)
+                )
             )
         },
         updateFetchFrequency: (source: RSSSource, frequency: number) => {
-            dispatch(
-                updateSource({
-                    ...source,
-                    fetchFrequency: frequency,
-                } as RSSSource)
+            void dispatch(
+                savePreferences(
+                    { sids: [source.sid] },
+                    { fetchFrequency: frequency },
+                    []
+                )
+            ).catch(error =>
+                window.utils.showErrorBox(
+                    intl.get("personal.failed"),
+                    String(error)
+                )
             )
         },
         deleteSource: (source: RSSSource) => dispatch(deleteSource(source)),

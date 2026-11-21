@@ -1,5 +1,16 @@
 import * as React from "react"
-import { CSSProperties, useLayoutEffect, useRef, useState } from "react"
+import {
+    CSSProperties,
+    useLayoutEffect,
+    useRef,
+    useState,
+    useEffect,
+} from "react"
+import intl from "react-intl-universal"
+import { Icon } from "@fluentui/react"
+import { useAppDispatch, useAppSelector } from "../scripts/reducer"
+import { saveReadingPreferences } from "../scripts/models/reading"
+import { FlatButton } from "./utils/FlatButton"
 import { makeStyles, mergeClasses } from "@griffel/react"
 import { useTheme } from "@fluentui/react"
 import {
@@ -12,11 +23,12 @@ import { Feed } from "./feeds/feed"
 import ArticleSearch from "./utils/article-search"
 import { ResizeHandle } from "./utils/ResizeHandle"
 import { useResizableWidth } from "./utils/hooks/useResizableWidth"
+import { ContextMenuType } from "../scripts/models/app"
 
 const useStyles = makeStyles({
     root: {
         display: "flex",
-        height: "100%",
+        height: "calc(100% - var(--selectionHeight, 0px))",
         position: "relative",
         // Keep the resize handle and drag shield below the navigation menu.
         isolation: "isolate",
@@ -58,7 +70,7 @@ const useStyles = makeStyles({
     articlePane: {
         flexGrow: 1,
         flexBasis: 0,
-        minWidth: `${LIST_ARTICLE_MIN_WIDTH}px`,
+        minWidth: 0,
         paddingTop: "var(--navHeight)",
         height: "100%",
         boxSizing: "border-box",
@@ -99,6 +111,29 @@ const useStyles = makeStyles({
         height: "120px",
         userSelect: "none",
     },
+    rail: {
+        width: "28px",
+        flexShrink: 0,
+        paddingTop: "var(--navHeight)",
+        backgroundColor: "var(--neutralLighterAlt)",
+        borderRight: "1px solid var(--neutralQuaternaryAlt)",
+    },
+    railButton: { width: "28px", height: "64px" },
+    listControl: {
+        width: "100%",
+        textAlign: "right",
+        paddingRight: "12px",
+        flexShrink: 0,
+        fontSize: "12px",
+    },
+    floating: {
+        position: "absolute",
+        left: "28px",
+        top: 0,
+        zIndex: 3,
+        boxShadow: "6px 0 24px #0004",
+    },
+    concealed: { visibility: "hidden", pointerEvents: "none" },
 })
 
 export function ListView({
@@ -112,6 +147,31 @@ export function ListView({
 }>) {
     const classes = useStyles()
     const theme = useTheme()
+    const dispatch = useAppDispatch()
+    const collapsed = useAppSelector(s => s.reading.collapseList)
+    const [peek, setPeek] = useState(false)
+    const menuActive = useAppSelector(
+        s => s.app.contextMenu.type !== ContextMenuType.Hidden
+    )
+    const interaction = useRef({ menu: false, inside: false })
+    interaction.current.menu = menuActive
+    const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+    const reveal = () => {
+        clearTimeout(hoverTimer.current)
+        hoverTimer.current = setTimeout(() => setPeek(true), 140)
+    }
+    const conceal = () => {
+        clearTimeout(hoverTimer.current)
+        hoverTimer.current = setTimeout(() => {
+            if (!interaction.current.menu && !interaction.current.inside)
+                setPeek(false)
+        }, 260)
+    }
+    useEffect(() => {
+        if (menuActive) clearTimeout(hoverTimer.current)
+        else if (!interaction.current.inside) conceal()
+    }, [menuActive])
+    useEffect(() => () => clearTimeout(hoverTimer.current), [])
     const container = useRef<HTMLDivElement>(null)
     const [availableWidth, setAvailableWidth] = useState(0)
     const { requestedWidth, handleProps } = useResizableWidth({
@@ -146,11 +206,68 @@ export function ListView({
                 } as CSSProperties
             }>
             <div
+                className={classes.rail}
+                style={{ display: collapsed ? undefined : "none" }}
+                onMouseEnter={reveal}
+                onMouseLeave={conceal}>
+                <FlatButton
+                    styleClass={classes.railButton}
+                    title={intl.get("organize.expandList")}
+                    onClick={() => {
+                        setPeek(false)
+                        void dispatch(
+                            saveReadingPreferences({ collapseList: false })
+                        )
+                    }}>
+                    <Icon iconName="ChevronRight" />
+                </FlatButton>
+            </div>
+            <div
+                onMouseEnter={() => {
+                    interaction.current.inside = true
+                    clearTimeout(hoverTimer.current)
+                }}
+                onMouseLeave={() => {
+                    interaction.current.inside = false
+                    conceal()
+                }}
+                onFocus={() => {
+                    clearTimeout(hoverTimer.current)
+                    setPeek(true)
+                }}
+                onBlur={event => {
+                    if (!event.currentTarget.contains(event.relatedTarget))
+                        conceal()
+                }}
+                onKeyDown={event => {
+                    if (event.key === "Escape" && collapsed && !menuActive) {
+                        event.stopPropagation()
+                        setPeek(false)
+                    }
+                }}
                 className={mergeClasses(
                     "list-feed-container",
                     classes.listPane,
-                    classes.paneHeader
+                    classes.paneHeader,
+                    collapsed && classes.floating,
+                    collapsed && !peek && classes.concealed
                 )}>
+                <FlatButton
+                    styleClass={classes.listControl}
+                    title={intl.get(
+                        collapsed ? "organize.pinList" : "organize.collapseList"
+                    )}
+                    onClick={() => {
+                        setPeek(false)
+                        void dispatch(
+                            saveReadingPreferences({ collapseList: !collapsed })
+                        )
+                    }}>
+                    <Icon iconName={collapsed ? "Pinned" : "ChevronLeft"} />{" "}
+                    {intl.get(
+                        collapsed ? "organize.pinList" : "organize.collapseList"
+                    )}
+                </FlatButton>
                 <ArticleSearch inline />
                 <div className={classes.feed}>
                     <Feed

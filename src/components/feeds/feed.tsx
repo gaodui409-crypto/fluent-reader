@@ -8,6 +8,7 @@ import { useAppSelector, useAppDispatch } from "../../scripts/reducer"
 import { ViewType, ViewConfigs } from "../../schema-types"
 import CardsFeed from "./cards-feed"
 import ListFeed from "./list-feed"
+import { articleCover } from "../../scripts/cover"
 
 export type FeedProps = {
     feed: RSSFeed
@@ -34,7 +35,23 @@ export const Feed: React.FC<FeedOwnProps> = ({ feedId, viewType }) => {
 
     const feed = useAppSelector(s => s.feeds[feedId])
     const items = useAppSelector(s =>
-        s.feeds[feedId] ? s.feeds[feedId].iids.map(iid => s.items[iid]) : []
+        s.feeds[feedId]
+            ? s.feeds[feedId].iids
+                  .map(iid => {
+                      const item = s.items[iid]
+                      if (!item) return item
+                      const thumb = articleCover(
+                          item,
+                          s.sources[item.source]?.url
+                      )
+                      return thumb === item.thumb ? item : { ...item, thumb }
+                  })
+                  .filter(
+                      item =>
+                          item &&
+                          FeedFilter.testItem(s.feeds[feedId].filter, item)
+                  )
+            : []
     )
     const sourceMap = useAppSelector(s => s.sources)
     const filter = useAppSelector(s => s.page.filter)

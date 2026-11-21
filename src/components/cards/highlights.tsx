@@ -13,9 +13,11 @@ const Highlights: React.FunctionComponent<HighlightsProps> = props => {
     const spans: [string, boolean][] = new Array()
     const flags = props.filter.type & FilterType.CaseInsensitive ? "ig" : "g"
     let regex: RegExp
+    const pattern = FeedFilter.pattern(props.filter, true)
     if (
-        props.filter.search === "" ||
-        !(regex = validateRegex(props.filter.search, flags))
+        pattern === "" ||
+        props.filter.type & FilterType.ExcludeSearch ||
+        !(regex = validateRegex(pattern, flags))
     ) {
         if (props.title) spans.push([props.text, false])
         else spans.push([props.text.substr(0, 325), false])
@@ -32,6 +34,10 @@ const Highlights: React.FunctionComponent<HighlightsProps> = props => {
                     ])
                 }
                 spans.push([match[0], true])
+                if (match[0].length === 0) {
+                    spans.push([props.text.charAt(regex.lastIndex), false])
+                    regex.lastIndex++
+                }
             } else {
                 spans.push([props.text.substr(startIndex), false])
             }

@@ -7,11 +7,15 @@ import {
 } from "react"
 import { RSSItem } from "../../../scripts/models/item"
 import { SourceOpenTarget } from "../../../scripts/models/source"
-import { decodeFetchResponse } from "../../../scripts/utils"
 
-function initialView(itemId: number, openTarget: SourceOpenTarget) {
+function initialView(
+    itemId: number,
+    openTarget: SourceOpenTarget,
+    requestedTarget = openTarget
+) {
     return {
         itemId,
+        openTarget: requestedTarget,
         mode:
             openTarget === SourceOpenTarget.External
                 ? SourceOpenTarget.Local
@@ -29,7 +33,11 @@ function articleCard(itemId: number) {
     )
 }
 
-export function useArticleView(item: RSSItem, openTarget: SourceOpenTarget) {
+export function useArticleView(
+    item: RSSItem,
+    openTarget: SourceOpenTarget,
+    collection?: string
+) {
     const itemId = item._id
     const [view, setView] = useState(() => initialView(itemId, openTarget))
     const articleRef = useRef<HTMLElement>(null)
@@ -38,7 +46,8 @@ export function useArticleView(item: RSSItem, openTarget: SourceOpenTarget) {
 
     // Reset before committing a new article so it never mounts the previous mode
     // or displays full content fetched for the previous article.
-    if (view.itemId !== itemId) setView(initialView(itemId, openTarget))
+    if (view.itemId !== itemId || view.openTarget !== openTarget)
+        setView(initialView(itemId, openTarget))
 
     const loadWebpage = view.mode === SourceOpenTarget.Webpage
     const loadFull = view.mode === SourceOpenTarget.FullContent
@@ -90,19 +99,21 @@ export function useArticleView(item: RSSItem, openTarget: SourceOpenTarget) {
 
         const loadContent = async () => {
             try {
-                const response = await fetch(item.link, {
-                    signal: controller.signal,
-                })
-                if (!response.ok) throw new Error()
-                const html = await decodeFetchResponse(response, true)
+                const result = await window.personal.fullText(
+                    itemId,
+                    view.reloadCount > 0,
+                    undefined,
+                    collection
+                )
+                const html = result.html
                 if (!controller.signal.aborted)
                     setView(view => ({ ...view, fullContent: html }))
-            } catch {
+            } catch (error) {
                 if (!controller.signal.aborted)
                     setView(view => ({
                         ...view,
                         loaded: true,
-                        error: "MERCURY_PARSER_FAILURE",
+                        error: String(error),
                     }))
             }
         }
@@ -110,22 +121,26 @@ export function useArticleView(item: RSSItem, openTarget: SourceOpenTarget) {
 
         // A mode switch, navigation, retry or close retires this request.
         return () => controller.abort()
-    }, [itemId, item.link, loadFull, view.reloadCount])
+    }, [itemId, item.link, loadFull, view.reloadCount, collection, openTarget])
 
     const toggleMode = useCallback(
         (mode: SourceOpenTarget) => {
             setView(view => {
                 if (view.mode === mode)
-                    return initialView(itemId, SourceOpenTarget.Local)
+                    return initialView(
+                        itemId,
+                        SourceOpenTarget.Local,
+                        openTarget
+                    )
                 if (
                     item.link.startsWith("https://") ||
                     item.link.startsWith("http://")
                 )
-                    return initialView(itemId, mode)
+                    return initialView(itemId, mode, openTarget)
                 return view
             })
         },
-        [itemId, item.link]
+        [itemId, item.link, openTarget]
     )
 
     const toggleWebpage = useCallback(
@@ -137,10 +152,7 @@ export function useArticleView(item: RSSItem, openTarget: SourceOpenTarget) {
         [toggleMode]
     )
     const reload = () => {
-        if (webview.current) {
-            setView(view => ({ ...view, loaded: false, error: "" }))
-            webview.current.reload()
-        } else if (loadFull) {
+        if (loadFull) {
             setView(view => ({
                 ...view,
                 fullContent: "",
@@ -148,6 +160,9 @@ export function useArticleView(item: RSSItem, openTarget: SourceOpenTarget) {
                 error: "",
                 reloadCount: view.reloadCount + 1,
             }))
+        } else if (webview.current) {
+            setView(view => ({ ...view, loaded: false, error: "" }))
+            webview.current.reload()
         }
     }
 

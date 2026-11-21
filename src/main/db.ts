@@ -13,6 +13,15 @@ import { WindowManager } from "./window"
 import performUpdate from "./update-scripts"
 import { transformLovefieldRules } from "./utils"
 import { getValidDate } from "../scripts/date"
+import { htmlText } from "./web-content"
+import { initPersonal } from "./personal"
+import { protectServiceConfig } from "./service-secrets"
+import {
+    clearLibraryData,
+    exportLibraryData,
+    restoreLibraryData,
+    LibraryBackup,
+} from "./library-backup"
 import type {
     DatabaseQuery,
     DatabaseResult,
@@ -46,7 +55,7 @@ async function handleExportAll() {
         const items = db.select().from(itemsTable).all()
         const output = {
             ...storeRef.store,
-            sqlite: { sources, items },
+            sqlite: { sources, items, library: exportLibraryData(sqlite) },
         }
         fs.writeFileSync(result.filePath, JSON.stringify(output))
     } catch (err) {
@@ -70,6 +79,13 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
         configs = JSON.parse(data)
         if (!configs || typeof configs !== "object" || Array.isArray(configs))
             throw new Error("Unrecognized backup format.")
+        if (
+            configs.serviceConfigs &&
+            !(configs.serviceConfigs as { encrypted?: string }).encrypted
+        )
+            configs.serviceConfigs = protectServiceConfig(
+                configs.serviceConfigs as import("../schema-types").ServiceConfigs
+            )
     } catch (err) {
         dialog.showErrorBox("Import Error", String(err))
         return true
@@ -105,6 +121,7 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
         fetchFrequency: (s.fetchFrequency as number) || 0,
         textDir: (s.textDir as number) || 0,
         hidden: Boolean(s.hidden),
+        archived: Boolean(s.archived),
     })
 
     const mapItem = (i: Record<string, unknown>): InsertItem => {
@@ -124,8 +141,16 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
             hasRead: Boolean(i.hasRead),
             starred: Boolean(i.starred),
             hidden: Boolean(i.hidden),
+            feedHidden: Boolean(i.feedHidden),
+            kept: Boolean(i.kept),
             notify: Boolean(i.notify),
             serviceRef: (i.serviceRef as string) || null,
+            readLater: Boolean(i.readLater),
+            highlight: typeof i.highlight === "string" ? i.highlight : "",
+            tags: Array.isArray(i.tags)
+                ? i.tags.filter(t => typeof t === "string")
+                : [],
+            saveRequested: Boolean(i.saveRequested),
         }
     }
 
@@ -154,6 +179,7 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
         }
 
         db.transaction(tx => {
+            clearLibraryData(sqlite)
             tx.delete(itemsTable).run()
             tx.delete(sourcesTable).run()
             for (let i = 0; i < typedSources.length; i += 50) {
@@ -166,6 +192,10 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
                     .values(typedItems.slice(i, i + 50))
                     .run()
             }
+            restoreLibraryData(
+                sqlite,
+                (configs.sqlite as { library?: LibraryBackup })?.library
+            )
         })
         optimizeDB()
     } catch (err) {
@@ -203,6 +233,25 @@ export function initDB(
     const dbPath = path.join(path.dirname(store.path), "fluent-reader.db")
 
     sqlite = new Database(dbPath)
+    sqlite.pragma("foreign_keys = ON")
+    if (
+        sqlite
+            .prepare("SELECT 1 FROM sqlite_master WHERE name='items'")
+            .get() &&
+        !sqlite
+            .prepare("SELECT 1 FROM sqlite_master WHERE name='article_folders'")
+            .get()
+    ) {
+        const before = path.join(
+            path.dirname(store.path),
+            "before-article-library"
+        )
+        if (!fs.existsSync(before + ".db")) {
+            fs.writeFileSync(before + ".db", sqlite.serialize())
+            fs.copyFileSync(store.path, before + ".json")
+        }
+    }
+    sqlite.function("html_text", { deterministic: true }, htmlText)
 
     // Register custom regex functions for SQLite queries
     sqlite.function(
@@ -234,6 +283,7 @@ export function initDB(
     const migrationsFolder = path.join(__dirname, "drizzle")
 
     migrate(db, { migrationsFolder })
+    initPersonal(sqlite, store, manager)
     // Include all tables on opening this long-lived connection, then maintain
     // statistics after bulk writes, daily, and on an orderly shutdown.
     try {

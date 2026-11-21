@@ -11,6 +11,7 @@ import {
     selectAllArticles,
     selectSources,
     toggleSearch,
+    selectCollection,
 } from "../scripts/models/page"
 import {
     makeStyles,
@@ -36,7 +37,11 @@ import { useIsWideScreen } from "./utils/hooks/useIsWideScreen"
 import { useIsBlurred } from "./utils/hooks/useIsBlurred"
 import { useArticleOverlayOpen } from "./utils/hooks/useArticleOverlayOpen"
 import { Icon } from "@fluentui/react"
+import { clearReadLater } from "../scripts/models/library"
+import { openBriefings } from "./personal/ai"
 import { StackShim } from "@fluentui/react-migration-v8-v9"
+import { useFolders, openFolders } from "./personal/folders"
+import { refreshArchive } from "../scripts/models/archive"
 
 const useMenuClasses = makeStyles({
     menuBtn: {
@@ -146,6 +151,9 @@ const useMenuClasses = makeStyles({
 })
 
 export const Menu: React.FC = () => {
+    const { folders } = useFolders()
+    const [openFoldersSet, setOpenFoldersSet] = useState(new Set<string>())
+    const aiConfigured = useAppSelector(s => s.library.aiConfigured)
     const dispatch = useAppDispatch()
     const menuClasses = useMenuClasses()
     const { findFirstFocusable } = useFocusFinders()
@@ -162,15 +170,51 @@ export const Menu: React.FC = () => {
     const groups = useAppSelector(s => s.groups)
     const searchOn = useAppSelector(s => s.page.searchOn)
     const articleOverlayOpen = useArticleOverlayOpen()
+    const items = useAppSelector(state => state.items)
+    const [tags, setTags] = useState<string[]>([])
+    const [counts, setCounts] = useState({ later: 0, starred: 0 })
+    const feeds = useAppSelector(s => s.feeds)
+    const hiddenLater = !!(feeds["later:"]?.filter.type & 4)
+    const hiddenStarred = !!(feeds["starred:"]?.filter.type & 4)
+    useEffect(() => {
+        let active = true
+        const timer = setTimeout(() => {
+            window.db
+                .execute(
+                    "SELECT coalesce(sum(i.readLater),0),coalesce(sum(i.starred),0) FROM items i",
+                    [],
+                    "get"
+                )
+                .then(row => {
+                    if (active)
+                        setCounts({
+                            later: Number(row[0]),
+                            starred: Number(row[1]),
+                        })
+                })
+                .catch(console.error)
+            window.personal
+                .tags()
+                .then(values => {
+                    if (active) setTags(values)
+                })
+                .catch(console.error)
+        }, 150)
+        return () => {
+            active = false
+            clearTimeout(timer)
+        }
+    }, [items, sources, hiddenLater, hiddenStarred])
 
     const openItems = useMemo(
         () =>
-            new Set(
-                groups
+            new Set([
+                ...openFoldersSet,
+                ...groups
                     .filter(g => g.isMultiple && g.expanded)
-                    .map(g => "g-" + g.gid)
-            ),
-        [groups]
+                    .map(g => "g-" + g.gid),
+            ]),
+        [groups, openFoldersSet]
     )
 
     const handleToggleMenu = useCallback(() => dispatch(toggleMenu()), [])
@@ -209,6 +253,13 @@ export const Menu: React.FC = () => {
                     const gid = Number.parseInt(value.slice(2))
                     dispatch(toggleGroupExpansion(gid))
                 }
+                if (value.startsWith("folder:"))
+                    setOpenFoldersSet(old => {
+                        const next = new Set(old)
+                        if (next.has(value)) next.delete(value)
+                        else next.add(value)
+                        return next
+                    })
             }
         },
         []
@@ -350,6 +401,230 @@ export const Menu: React.FC = () => {
                                     handleAllArticles(selected !== ALL)
                                 }
                             />
+                            <MenuTreeItem
+                                value="later:"
+                                aside={
+                                    <span
+                                        title={intl.get("organize.totalCount")}>
+                                        {counts.later}
+                                    </span>
+                                }
+                                label={intl.get("personal.readLater")}
+                                isSelected={selected === "later:"}
+                                onClick={() =>
+                                    dispatch(selectCollection("later"))
+                                }
+                            />
+                            <MenuTreeItem
+                                value="starred:"
+                                aside={
+                                    <span
+                                        title={intl.get("organize.totalCount")}>
+                                        {counts.starred}
+                                    </span>
+                                }
+                                label={intl.get("personal.favorites")}
+                                isSelected={selected === "starred:"}
+                                onClick={() =>
+                                    dispatch(selectCollection("starred"))
+                                }
+                            />
+                            {aiConfigured && (
+                                <MenuTreeItem
+                                    value="briefings"
+                                    label={intl.get("ai.briefings")}
+                                    onClick={openBriefings}
+                                />
+                            )}
+                            {selected === "later:" && (
+                                <MenuTreeItem
+                                    value="clear-read-later"
+                                    label={intl.get("personal.clearReadLater")}
+                                    onClick={() =>
+                                        void dispatch(clearReadLater()).catch(
+                                            error =>
+                                                window.utils.showErrorBox(
+                                                    intl.get("personal.failed"),
+                                                    String(error)
+                                                )
+                                        )
+                                    }
+                                />
+                            )}
+                            <MenuTreeItem
+                                value="folder-manager"
+                                label="＋管理文章文件夹"
+                                onClick={() => openFolders()}
+                            />
+                            <MenuTreeItem
+                                value="library:"
+                                label="未分类资料"
+                                isSelected={selected === "library:"}
+                                onClick={() =>
+                                    dispatch(
+                                        selectCollection(
+                                            "library",
+                                            "",
+                                            "未分类资料"
+                                        )
+                                    )
+                                }
+                            />
+                            {folders
+                                .filter(f => f.parentId === null)
+                                .map(folder => (
+                                    <MenuTreeItem
+                                        key={"folder:" + folder.id}
+                                        value={"folder:" + folder.id}
+                                        label={folder.name}
+                                        icon={<Icon iconName="Folder" />}
+                                        aside={<span>{folder.count}</span>}
+                                        itemType={
+                                            folders.some(
+                                                f => f.parentId === folder.id
+                                            )
+                                                ? "branch"
+                                                : "leaf"
+                                        }
+                                        isSelected={
+                                            selected === "folder:" + folder.id
+                                        }
+                                        onClick={() =>
+                                            dispatch(
+                                                selectCollection(
+                                                    "folder",
+                                                    String(folder.id),
+                                                    folder.name
+                                                )
+                                            )
+                                        }
+                                        onContextMenu={e => {
+                                            e.preventDefault()
+                                            openFolders(folder.id)
+                                        }}
+                                        draggable
+                                        onDragStart={e =>
+                                            e.dataTransfer.setData(
+                                                "application/x-article-folder",
+                                                String(folder.id)
+                                            )
+                                        }
+                                        onDrop={e => {
+                                            e.preventDefault()
+                                            const id = Number(
+                                                e.dataTransfer.getData(
+                                                    "application/x-article-folder"
+                                                )
+                                            )
+                                            const from = folders.find(
+                                                f => f.id === id
+                                            )
+                                            if (from)
+                                                void window.personal
+                                                    .archiveSaveFolder({
+                                                        ...from,
+                                                        parentId: folder.id,
+                                                    })
+                                                    .then(() =>
+                                                        dispatch(
+                                                            refreshArchive()
+                                                        )
+                                                    )
+                                                    .catch(e =>
+                                                        window.utils.showErrorBox(
+                                                            "文件夹移动失败",
+                                                            String(e)
+                                                        )
+                                                    )
+                                        }}>
+                                        {folders.some(
+                                            f => f.parentId === folder.id
+                                        ) && (
+                                            <Tree>
+                                                {folders
+                                                    .filter(
+                                                        f =>
+                                                            f.parentId ===
+                                                            folder.id
+                                                    )
+                                                    .map(child => (
+                                                        <MenuTreeItem
+                                                            key={
+                                                                "folder:" +
+                                                                child.id
+                                                            }
+                                                            value={
+                                                                "folder:" +
+                                                                child.id
+                                                            }
+                                                            label={child.name}
+                                                            aside={
+                                                                <span>
+                                                                    {
+                                                                        child.count
+                                                                    }
+                                                                </span>
+                                                            }
+                                                            isSelected={
+                                                                selected ===
+                                                                "folder:" +
+                                                                    child.id
+                                                            }
+                                                            onClick={() =>
+                                                                dispatch(
+                                                                    selectCollection(
+                                                                        "folder",
+                                                                        String(
+                                                                            child.id
+                                                                        ),
+                                                                        folder.name +
+                                                                            " / " +
+                                                                            child.name
+                                                                    )
+                                                                )
+                                                            }
+                                                            onContextMenu={e => {
+                                                                e.preventDefault()
+                                                                openFolders(
+                                                                    child.id
+                                                                )
+                                                            }}
+                                                            draggable
+                                                            onDragStart={e =>
+                                                                e.dataTransfer.setData(
+                                                                    "application/x-article-folder",
+                                                                    String(
+                                                                        child.id
+                                                                    )
+                                                                )
+                                                            }
+                                                        />
+                                                    ))}
+                                            </Tree>
+                                        )}
+                                    </MenuTreeItem>
+                                ))}
+                            {tags
+                                .filter(tag => !tag.startsWith("主题/"))
+                                .map(tag => (
+                                    <MenuTreeItem
+                                        key={"tag:" + tag}
+                                        value={"tag:" + tag}
+                                        label={
+                                            tag.startsWith("主题/")
+                                                ? intl.get(
+                                                      "organize.topicLabel"
+                                                  ) + tag.slice(3)
+                                                : "#" + tag
+                                        }
+                                        isSelected={selected === "tag:" + tag}
+                                        onClick={() =>
+                                            dispatch(
+                                                selectCollection("tag", tag)
+                                            )
+                                        }
+                                    />
+                                ))}
                             {groups.length > 0 && (
                                 <StackShim
                                     horizontal
@@ -384,7 +659,7 @@ export const Menu: React.FC = () => {
                             )}
                             {groups
                                 .filter(g => {
-                                    if (g.sids.length === 0) return false
+                                    if (g.sids.length === 0) return g.isMultiple
                                     if (!isUnreadSourcesOnly) return true
                                     return g.sids.some(
                                         sid => sources[sid]?.unreadCount > 0
@@ -412,7 +687,14 @@ export const Menu: React.FC = () => {
                                                 key={groupKey}
                                                 value={groupKey}
                                                 itemType="branch"
-                                                label={g.name}
+                                                label={
+                                                    g.name +
+                                                    (g.sids.length
+                                                        ? ""
+                                                        : intl.get(
+                                                              "organize.emptyGroup"
+                                                          ))
+                                                }
                                                 isSelected={isGroupSelected}
                                                 unreadCount={groupUnread}
                                                 onClick={() =>
@@ -489,6 +771,9 @@ const useTreeItemClasses = makeStyles({
 })
 
 interface MenuTreeItemProps {
+    draggable?: boolean
+    onDragStart?: React.DragEventHandler
+    onDrop?: React.DragEventHandler
     value: string
     itemType?: "leaf" | "branch"
     label: string
@@ -512,6 +797,9 @@ const MenuTreeItem: React.FC<MenuTreeItemProps> = ({
     onClick,
     onContextMenu,
     children,
+    draggable,
+    onDragStart,
+    onDrop,
 }) => {
     const c = useTreeItemClasses()
     const { level } = useSubtreeContext_unstable()
@@ -533,7 +821,14 @@ const MenuTreeItem: React.FC<MenuTreeItemProps> = ({
         <TreeItem
             value={value}
             itemType={itemType}
-            onClick={onClick}
+            onClick={e => {
+                e.stopPropagation()
+                onClick()
+            }}
+            draggable={draggable}
+            onDragStart={onDragStart}
+            onDragOver={onDrop ? e => e.preventDefault() : undefined}
+            onDrop={onDrop}
             onContextMenu={handleContextMenu}>
             <TreeItemLayout
                 aria-label={`${isSelected ? "Selected: " : ""}${label}`}

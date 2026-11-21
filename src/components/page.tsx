@@ -25,7 +25,7 @@ const usePageClasses = makeStyles({
         "marginTop": "calc(-1 * var(--navHeight))",
         "marginLeft": 0,
         "transition": "margin-left var(--transition-timing) 0.367s",
-        "height": "100%",
+        "height": "calc(100% - var(--selectionHeight, 0px))",
         "overflow": "hidden",
         "backgroundColor": "var(--neutralLighterAlt)",
         "::before": {

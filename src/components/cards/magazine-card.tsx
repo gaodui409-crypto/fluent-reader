@@ -2,6 +2,7 @@ import * as React from "react"
 import { Card } from "./card"
 import CardInfo from "./info"
 import Highlights from "./highlights"
+import { TranslatedTitle } from "../personal/ai"
 import { SourceTextDirection } from "../../scripts/models/source"
 
 const className = (props: Card.Props) => {
@@ -26,11 +27,7 @@ const MagazineCard: React.FunctionComponent<Card.Props> = props => (
         <div className="data">
             <div>
                 <h3 className="title">
-                    <Highlights
-                        text={props.item.title}
-                        filter={props.filter}
-                        title
-                    />
+                    <TranslatedTitle item={props.item} filter={props.filter} />
                 </h3>
                 <p className="snippet">
                     <Highlights

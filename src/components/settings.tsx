@@ -4,6 +4,7 @@ import intl from "react-intl-universal"
 import { Icon } from "@fluentui/react/lib/Icon"
 import { AnimationClassNames } from "@fluentui/react/lib/Styling"
 import AboutTab from "./settings/about"
+import PersonalTab from "./settings/personal"
 import { Pivot, PivotItem, FocusTrapZone } from "@fluentui/react"
 import SourcesTabContainer from "../containers/settings/sources-container"
 import GroupsTab from "./settings/groups"
@@ -116,6 +117,11 @@ const Settings: React.FC = () => {
                             headerText={intl.get("settings.about")}
                             itemIcon="Info">
                             <AboutTab />
+                        </PivotItem>
+                        <PivotItem
+                            headerText={intl.get("personal.settings")}
+                            itemIcon="Library">
+                            <PersonalTab />
                         </PivotItem>
                     </Pivot>
                 </div>

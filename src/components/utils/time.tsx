@@ -3,6 +3,7 @@ import intl from "react-intl-universal"
 
 interface TimeProps {
     date: Date
+    title?: string
 }
 
 class Time extends React.Component<TimeProps> {
@@ -32,7 +33,9 @@ class Time extends React.Component<TimeProps> {
 
     render() {
         return (
-            <span className="time">
+            <span
+                className="time"
+                title={this.props.title || this.props.date.toLocaleString()}>
                 {this.displayTime(this.props.date, this.state.now)}
             </span>
         )

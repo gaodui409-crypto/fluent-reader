@@ -8,6 +8,7 @@ import {
     toggleStarred,
     toggleHidden,
     itemShortcuts,
+    updateItemMeta,
 } from "../scripts/models/item"
 import {
     Stack,
@@ -34,6 +35,11 @@ import {
     closeContextMenu,
 } from "../scripts/models/app"
 import { useArticleView } from "./utils/hooks/useArticleView"
+import { useSourcePreferences } from "../scripts/models/preferences"
+import { AIArticle } from "./personal/ai"
+import { editTags } from "./personal/tags"
+import { saveOffline, openOffline } from "../scripts/models/library"
+import { ArticleNotes } from "./personal/article-notes"
 import { makeStyles, mergeClasses, shorthands } from "@griffel/react"
 
 const useStyles = makeStyles({
@@ -92,7 +98,7 @@ const useStyles = makeStyles({
     },
     content: {
         width: "100%",
-        height: "calc(100% - 36px)",
+        height: "calc(100% - 36px - var(--notesHeight, 0px))",
         ...shorthands.borderStyle("none"),
         color: "var(--black)",
     },
@@ -115,6 +121,18 @@ function Article({ itemId, side = false }: ArticleProps) {
     const dispatch = useAppDispatch()
     const item = useAppSelector(state => state.items[itemId])
     const source = useAppSelector(state => state.sources[item.source])
+    const preferences = useSourcePreferences(source)
+    const collectionTarget = useAppSelector(
+        s => s.reading.collections[s.app.menuKey]?.openTarget
+    )
+    const collection = useAppSelector(s => s.app.menuKey)
+    const canFetchFull =
+        preferences.fetchMode !== "off" || collectionTarget === 3
+    const openTarget = collectionTarget ?? preferences.openTarget
+    const aiConfigured = useAppSelector(s => s.library.aiConfigured)
+    const savedOffline = useAppSelector(state =>
+        state.library.saved.includes(item._id)
+    )
     const locale = useAppSelector(state => state.app.locale)
     const [fontFamily, setFontFamily] = useState(() =>
         window.settings.getFont()
@@ -135,7 +153,15 @@ function Article({ itemId, side = false }: ArticleProps) {
         toggleWebpage,
         toggleFull,
         reload,
-    } = useArticleView(item, source.openTarget)
+    } = useArticleView(
+        item,
+        collectionTarget === undefined &&
+            preferences.fetchMode === "off" &&
+            openTarget === 3
+            ? 0
+            : openTarget,
+        collectionTarget === 3 ? collection : undefined
+    )
 
     const dismiss = () => dispatch(dismissItem())
     const handleNavigationKey = useCallback(
@@ -174,7 +200,7 @@ function Article({ itemId, side = false }: ArticleProps) {
                     break
                 case "w":
                 case "W":
-                    toggleFull()
+                    if (canFetchFull) toggleFull()
                     break
                 case "h":
                 case "H":
@@ -202,6 +228,7 @@ function Article({ itemId, side = false }: ArticleProps) {
         item,
         toggleWebpage,
         toggleFull,
+        canFetchFull,
         handleToggleHidden,
         handleNavigationKey,
     ])
@@ -271,6 +298,37 @@ function Article({ itemId, side = false }: ArticleProps) {
 
     const moreMenuProps = (): IContextualMenuProps => ({
         items: [
+            ...(savedOffline
+                ? [
+                      {
+                          key: "local",
+                          text: intl.get("personal.openOffline"),
+                          iconProps: { iconName: "OfflineStorage" },
+                          onClick: () => openOffline(item._id),
+                      },
+                      {
+                          key: "folder",
+                          text: intl.get("personal.showFile"),
+                          iconProps: { iconName: "FolderOpen" },
+                          onClick: () => openOffline(item._id, true),
+                      },
+                  ]
+                : []),
+            {
+                key: "tags",
+                text: intl.get("personal.editTags"),
+                iconProps: { iconName: "Tag" },
+                onClick: () => {
+                    editTags(item._id)
+                },
+            },
+            {
+                key: "refetch",
+                text: intl.get("personal.refetch"),
+                disabled: !loadFull,
+                iconProps: { iconName: "Refresh" },
+                onClick: reload,
+            },
             {
                 key: "openInBrowser",
                 text: intl.get("openExternal"),
@@ -345,9 +403,7 @@ function Article({ itemId, side = false }: ArticleProps) {
         )
         return `article/article.html?a=${a}&h=${h}&f=${encodeURIComponent(
             fontFamily
-        )}&s=${fontSize}&d=${source.textDir}&u=${item.link}&m=${
-            loadFull ? 1 : 0
-        }`
+        )}&s=${fontSize}&d=${source.textDir}&u=${item.link}&m=${0}`
     }
 
     return (
@@ -455,11 +511,44 @@ function Article({ itemId, side = false }: ArticleProps) {
                         onClick={() => dispatch(toggleStarred(item))}
                     />
                     <CommandBarButton
-                        title={intl.get("article.loadFull")}
-                        className={loadFull ? "active" : ""}
-                        iconProps={{ iconName: "RawSource" }}
-                        onClick={toggleFull}
+                        title={intl.get(
+                            item.readLater
+                                ? "personal.removeLater"
+                                : "personal.laterAction"
+                        )}
+                        className={item.readLater ? "active" : ""}
+                        iconProps={{ iconName: "Clock" }}
+                        onClick={() =>
+                            void dispatch(
+                                updateItemMeta(item, {
+                                    readLater: !item.readLater,
+                                })
+                            ).catch(error =>
+                                window.utils.showErrorBox(
+                                    intl.get("personal.failed"),
+                                    String(error)
+                                )
+                            )
+                        }
                     />
+                    {aiConfigured && preferences.aiEnabled && (
+                        <AIArticle key={item._id} id={item._id} />
+                    )}
+                    {preferences.offlineEnabled && (
+                        <CommandBarButton
+                            title={intl.get("personal.offlineSave")}
+                            iconProps={{ iconName: "Save" }}
+                            onClick={() => void dispatch(saveOffline(item._id))}
+                        />
+                    )}
+                    {canFetchFull && (
+                        <CommandBarButton
+                            title={intl.get("article.loadFull")}
+                            className={loadFull ? "active" : ""}
+                            iconProps={{ iconName: "RawSource" }}
+                            onClick={toggleFull}
+                        />
+                    )}
                     <CommandBarButton
                         title={intl.get("article.loadWebpage")}
                         className={loadWebpage ? "active" : ""}
@@ -484,6 +573,7 @@ function Article({ itemId, side = false }: ArticleProps) {
                     />
                 </Stack>
             </Stack>
+            <ArticleNotes key={item._id} id={item._id} />
             {showWebview && (
                 <webview
                     id="article"
@@ -495,8 +585,8 @@ function Article({ itemId, side = false }: ArticleProps) {
                     key={webviewKey}
                     src={loadWebpage ? item.link : articleView()}
                     allowpopups={"true" as unknown as boolean}
-                    webpreferences="contextIsolation,disableDialogs,autoplayPolicy=document-user-activation-required"
-                    partition={loadWebpage ? "sandbox" : undefined}
+                    webpreferences="contextIsolation=yes,nodeIntegration=no,sandbox=yes,disableDialogs,autoplayPolicy=document-user-activation-required"
+                    partition={loadWebpage ? "persist:sandbox" : undefined}
                 />
             )}
             {error && (

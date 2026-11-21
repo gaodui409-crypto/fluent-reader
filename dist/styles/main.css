@@ -32,7 +32,7 @@
         0 1.2px 3.6px 0 rgba(0, 0, 0, 0.108);
     overflow: hidden;
 }
-div[role="toolbar"] {
+.settings div[role="toolbar"] {
     height: 100%;
 }
 div[role="tabpanel"] {

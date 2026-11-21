@@ -1,4 +1,10 @@
 import * as React from "react"
+import {
+    openSourcePreferences,
+    useSourcePreferences,
+} from "../scripts/models/preferences"
+import { saveOffline, openOffline } from "../scripts/models/library"
+import { editTags } from "./personal/tags"
 import intl from "react-intl-universal"
 import { QRCodeSVG } from "qrcode.react"
 import {
@@ -26,9 +32,12 @@ import {
     RSSItem,
     toggleHidden,
     toggleStarred,
+    updateItemMeta,
 } from "../scripts/models/item"
 import { ViewType, ImageCallbackTypes, ViewConfigs } from "../schema-types"
-import { FilterType } from "../scripts/models/feed"
+import { FilterType, RSSFeed } from "../scripts/models/feed"
+import { refreshArchive } from "../scripts/models/archive"
+import { openOrganize } from "./personal/organize"
 import { useAppDispatch, useAppSelector } from "../scripts/reducer"
 import {
     setViewConfigs,
@@ -88,8 +97,58 @@ function ItemContextMenu() {
     const target = useAppSelector(state => state.app.contextMenu.target)
     const item = target[0] as RSSItem
     const feedId = target[1] as string
+    const source = useAppSelector(state => state.sources[item.source])
+    const preferences = useSourcePreferences(source)
+    const saved = useAppSelector(state =>
+        state.library.saved.includes(item._id)
+    )
 
     const menuItems: IContextualMenuItem[] = [
+        {
+            key: "later",
+            text: intl.get(
+                item.readLater ? "personal.removeLater" : "personal.laterAction"
+            ),
+            iconProps: { iconName: "Clock" },
+            onClick: () => {
+                void dispatch(
+                    updateItemMeta(item, { readLater: !item.readLater })
+                ).catch(error =>
+                    window.utils.showErrorBox(
+                        intl.get("personal.failed"),
+                        String(error)
+                    )
+                )
+            },
+        },
+        ...(preferences.offlineEnabled
+            ? [
+                  {
+                      key: "saveOffline",
+                      text: intl.get("personal.offlineSave"),
+                      iconProps: { iconName: "Save" },
+                      onClick: () => {
+                          void dispatch(saveOffline(item._id))
+                      },
+                  },
+              ]
+            : []),
+        ...(saved
+            ? [
+                  {
+                      key: "openOffline",
+                      text: intl.get("personal.openOffline"),
+                      iconProps: { iconName: "OfflineStorage" },
+                      onClick: () => openOffline(item._id),
+                  },
+                  {
+                      key: "showFile",
+                      text: intl.get("personal.showFile"),
+                      iconProps: { iconName: "FolderOpen" },
+                      onClick: () => openOffline(item._id, true),
+                  },
+              ]
+            : []),
         {
             key: "showItem",
             text: intl.get("context.read"),
@@ -105,6 +164,7 @@ function ItemContextMenu() {
             iconProps: { iconName: "NavigateExternalInline" },
             onClick: e => {
                 dispatch(markRead(item))
+                void window.personal.opened?.(item._id).catch(console.error)
                 globalThis.utils.openExternal(item.link, platformCtrl(e))
             },
         },
@@ -176,6 +236,14 @@ function ItemContextMenu() {
             },
             onClick: () => {
                 dispatch(toggleHidden(item))
+            },
+        },
+        {
+            key: "tags",
+            text: intl.get("personal.editTags"),
+            iconProps: { iconName: "Tag" },
+            onClick: () => {
+                editTags(item._id)
             },
         },
         {
@@ -539,54 +607,104 @@ function GroupContextMenu() {
                 dispatch(toggleSettings(true, sids))
             },
         },
+        {
+            key: "sourcePreferences",
+            text: intl.get("personal.sourceSettings"),
+            iconProps: { iconName: "Settings" },
+            onClick: () => openSourcePreferences({ sids }),
+        },
     ]
     return <ContextMenuBase menuItems={menuItems} />
 }
 
 function MarkReadContextMenu() {
     const dispatch = useAppDispatch()
+    const feed = useAppSelector(s => s.feeds[s.page.feedId])
+    const title = useAppSelector(s => s.app.title)
+    const [rows, setRows] = React.useState<RSSItem[]>()
+    const [now] = React.useState(Date.now)
+    React.useEffect(() => {
+        let active = true
+        if (feed)
+            void RSSFeed.loadFeed(feed, 0, -1).then(rows => {
+                if (active) setRows(rows.filter(item => !item.hasRead))
+            })
+        return () => {
+            active = false
+        }
+    }, [feed])
+    const run = async (days?: number) => {
+        try {
+            const boundary = days ? Date.now() - days * 86400000 : Infinity
+            const current = await RSSFeed.loadFeed(feed, 0, -1)
+            const result = await window.personal.archiveApply(
+                current
+                    .filter(item => !item.hasRead && +item.date < boundary)
+                    .map(item => item._id),
+                { kind: "read" }
+            )
+            const warning = await dispatch(refreshArchive(result))
+            window.dispatchEvent(
+                new CustomEvent("archive-result", {
+                    detail: {
+                        result,
+                        message: `已标读 ${result.count} 篇${warning}`,
+                    },
+                })
+            )
+        } catch (error) {
+            window.dispatchEvent(
+                new CustomEvent("archive-result", {
+                    detail: { message: String(error) },
+                })
+            )
+        }
+    }
 
     const menuItems: IContextualMenuItem[] = [
         {
             key: "section_1",
             itemType: ContextualMenuItemType.Section,
             sectionProps: {
-                title: intl.get("nav.markAllRead"),
+                title: `${title} · ${
+                    rows ? rows.length + " 篇未读" : "正在统计…"
+                }`,
                 items: [
                     {
                         key: "all",
                         text: intl.get("allArticles"),
                         iconProps: { iconName: "ReceiptCheck" },
                         onClick: () => {
-                            dispatch(markAllRead())
+                            void run()
                         },
                     },
                     {
                         key: "1d",
                         text: intl.get("app.daysAgo", { days: 1 }),
+                        secondaryText:
+                            new Date(now - 86400000).toLocaleString() + " 之前",
                         onClick: () => {
-                            let date = new Date()
-                            date.setTime(date.getTime() - 86400000)
-                            dispatch(markAllRead(null, date))
+                            void run(1)
                         },
                     },
                     {
                         key: "3d",
                         text: intl.get("app.daysAgo", { days: 3 }),
                         onClick: () => {
-                            let date = new Date()
-                            date.setTime(date.getTime() - 3 * 86400000)
-                            dispatch(markAllRead(null, date))
+                            void run(3)
                         },
                     },
                     {
                         key: "7d",
                         text: intl.get("app.daysAgo", { days: 7 }),
                         onClick: () => {
-                            let date = new Date()
-                            date.setTime(date.getTime() - 7 * 86400000)
-                            dispatch(markAllRead(null, date))
+                            void run(7)
                         },
+                    },
+                    {
+                        key: "organize",
+                        text: "精细筛选归档…",
+                        onClick: () => openOrganize(),
                     },
                 ],
             },

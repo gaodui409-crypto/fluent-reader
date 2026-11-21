@@ -9,6 +9,7 @@ import {
     DataGridHeader,
     DataGridHeaderCell,
     DataGridRow,
+    Switch,
 } from "@fluentui/react-components"
 import {
     Add16Regular,
@@ -16,6 +17,7 @@ import {
     Edit16Regular,
 } from "@fluentui/react-icons"
 import { ArticleRule, RuleActions } from "../../../scripts/models/rule"
+import { FilterType } from "../../../scripts/models/feed"
 import { FlatButton } from "../../utils/FlatButton"
 import { FlatButtonGroup } from "../../utils/FlatButtonGroup"
 import { FlatButtonSeparator } from "../../utils/FlatButtonSeparator"
@@ -46,20 +48,76 @@ export function RuleList({
     const columns = useMemo(
         () => [
             createTableColumn<ArticleRule>({
+                columnId: "enabled",
+                renderHeaderCell: () => intl.get("personal.enabled"),
+                renderCell: rule => (
+                    <Switch
+                        checked={rule.enabled !== false}
+                        disabled={saving}
+                        aria-label={intl.get("personal.enabled")}
+                        onChange={(_, data) =>
+                            onChange(
+                                rules.map(item =>
+                                    item === rule
+                                        ? Object.assign(
+                                              ArticleRule.fromStored(
+                                                  ArticleRule.toStored(item)
+                                              ),
+                                              { enabled: data.checked }
+                                          )
+                                        : item
+                                )
+                            )
+                        }
+                    />
+                ),
+            }),
+            createTableColumn<ArticleRule>({
                 columnId: "regex",
-                renderHeaderCell: () => intl.get("rules.regex"),
-                renderCell: rule => rule.filter.search,
+                renderHeaderCell: () => intl.get("rules.condition"),
+                renderCell: rule =>
+                    rule.conditions
+                        ? rule.conditions
+                              .map(
+                                  condition =>
+                                      `${intl.get(
+                                          "personal.field_" + condition.field
+                                      )} ${intl.get(
+                                          "personal." + condition.operator
+                                      )} ${condition.value}`
+                              )
+                              .join(rule.logic === "all" ? " ∧ " : " ∨ ")
+                        : rule.filter.type & FilterType.KeywordSearch
+                        ? `${intl.get(
+                              rule.match ? "rules.block" : "rules.keep"
+                          )} · ${intl.get(
+                              rule.filter.type & FilterType.MatchAll
+                                  ? "rules.allWords"
+                                  : "rules.anyWords"
+                          )}: ${rule.filter.search}`
+                        : rule.filter.search,
             }),
             createTableColumn<ArticleRule>({
                 columnId: "actions",
                 renderHeaderCell: () => intl.get("rules.action"),
                 renderCell: rule =>
-                    RuleActions.toKeys(rule.actions)
-                        .map(key => intl.get(actionKeyMap[key]))
-                        .join(", "),
+                    [
+                        ...RuleActions.toKeys(rule.actions).map(key =>
+                            intl.get(
+                                actionKeyMap[key] ||
+                                    (key.startsWith("l-")
+                                        ? "personal.laterAction"
+                                        : "personal.offlineAction")
+                            )
+                        ),
+                        ...(rule.highlight
+                            ? [intl.get("personal.highlight")]
+                            : []),
+                        ...(rule.tags || []).map(tag => "#" + tag),
+                    ].join(", "),
             }),
         ],
-        []
+        [rules, saving, onChange]
     )
 
     function reorder(insertIndex: number) {

@@ -1,5 +1,6 @@
 import { database, itemsTable, itemsInSources } from "../db"
-import { and, eq, desc, sql } from "drizzle-orm"
+import { and, or, not, eq, desc, sql } from "drizzle-orm"
+import { keywordPattern } from "../keywords"
 import {
     SourceActionTypes,
     INIT_SOURCES,
@@ -13,6 +14,7 @@ import {
     FETCH_ITEMS,
     RSSItem,
     TOGGLE_HIDDEN,
+    UPDATE_ITEM_META,
     applyItemReduction,
 } from "./item"
 import { ActionStatus, AppThunk, mergeSortedArrays } from "../utils"
@@ -26,44 +28,93 @@ export enum FilterType {
     FullSearch = 1 << 3,
     CaseInsensitive = 1 << 4,
     CreatorSearch = 1 << 5,
+    KeywordSearch = 1 << 6,
+    MatchAll = 1 << 7,
+    ExcludeSearch = 1 << 8,
+    BodySearch = 1 << 9,
 
     Default = ShowRead | ShowNotStarred,
     UnreadOnly = ShowNotStarred,
     StarredOnly = ShowRead,
-    Toggles = ShowHidden | FullSearch | CaseInsensitive,
+    Toggles = ShowHidden |
+        FullSearch |
+        CaseInsensitive |
+        KeywordSearch |
+        MatchAll |
+        ExcludeSearch |
+        BodySearch |
+        CreatorSearch,
 }
 export class FeedFilter {
     type: FilterType
     search: string
+    tag?: string
+    laterOnly?: boolean
+    library?: boolean
+    folderId?: number
+    ids?: number[]
+    unfiled?: boolean
 
     constructor(type: FilterType = null, search = "") {
         if (
             type === null &&
             (type = window.settings.getFilterType()) === null
         ) {
-            type = FilterType.Default | FilterType.CaseInsensitive
+            type =
+                FilterType.Default |
+                FilterType.CaseInsensitive |
+                FilterType.KeywordSearch
         }
         this.type = type
         this.search = search
     }
 
+    static pattern(filter: FeedFilter, highlight = false): string {
+        return filter.type & FilterType.KeywordSearch
+            ? keywordPattern(
+                  filter.search,
+                  !highlight && !!(filter.type & FilterType.MatchAll)
+              )
+            : filter.search
+    }
+
     static testItem(filter: FeedFilter, item: RSSItem) {
         let type = filter.type
         let flag = true
+        if (filter.tag) flag = flag && (item.tags || []).includes(filter.tag)
+        if (filter.laterOnly) flag = flag && !!item.readLater
         if (!(type & FilterType.ShowRead)) flag = flag && !item.hasRead
         if (!(type & FilterType.ShowNotStarred)) flag = flag && item.starred
-        if (!(type & FilterType.ShowHidden)) flag = flag && !item.hidden
-        if (filter.search !== "") {
+        if (!(type & FilterType.ShowHidden) && !filter.library)
+            flag = flag && !item.hidden && !item.feedHidden
+        if (filter.ids) flag = flag && filter.ids.includes(item._id)
+        const pattern = FeedFilter.pattern(filter)
+        if (pattern !== "") {
             const flags = type & FilterType.CaseInsensitive ? "i" : ""
-            const regex = RegExp(filter.search, flags)
-            if (type & FilterType.FullSearch) {
-                flag =
-                    flag && (regex.test(item.title) || regex.test(item.snippet))
-            } else if (type & FilterType.CreatorSearch) {
-                flag = flag && regex.test(item.creator || "")
-            } else {
-                flag = flag && regex.test(item.title)
+            let regex: RegExp
+            try {
+                regex = RegExp(pattern, flags)
+            } catch {
+                return false
             }
+            let matches: boolean
+            if (type & FilterType.FullSearch) {
+                matches =
+                    type & FilterType.KeywordSearch
+                        ? regex.test(
+                              `${item.title || ""}\n${item.snippet || ""}`
+                          )
+                        : regex.test(item.title || "") ||
+                          regex.test(item.snippet || "")
+            } else if (type & FilterType.CreatorSearch) {
+                matches = regex.test(item.creator || "")
+            } else if (type & FilterType.BodySearch) {
+                matches = regex.test(item.snippet || "")
+            } else {
+                matches = regex.test(item.title || "")
+            }
+            flag =
+                flag && (type & FilterType.ExcludeSearch ? !matches : matches)
         }
         return Boolean(flag)
     }
@@ -73,6 +124,12 @@ export const ALL = "ALL"
 export const SOURCE = "SOURCE"
 
 const LOAD_QUANTITY = 50
+const requestVersions = new Map<string, number>()
+function beginRequest(id: string) {
+    const version = (requestVersions.get(id) || 0) + 1
+    requestVersions.set(id, version)
+    return version
+}
 
 export class RSSFeed {
     _id: string
@@ -92,50 +149,73 @@ export class RSSFeed {
         this.filter = filter === null ? new FeedFilter() : filter
     }
 
-    static async loadFeed(feed: RSSFeed, skip = 0): Promise<RSSItem[]> {
+    static async loadFeed(
+        feed: RSSFeed,
+        skip = 0,
+        limit = LOAD_QUANTITY
+    ): Promise<RSSItem[]> {
         if (feed.sids.length === 0) return []
         const filter = feed.filter
         const type = filter.type
         const conditions = [itemsInSources(feed.sids)]
+        if (filter.folderId !== undefined)
+            conditions.push(
+                sql`${itemsTable._id} IN (SELECT min(fi._id) FROM items fi JOIN folder_articles fa ON fa.itemId=fi._id JOIN article_folders f ON f.id=fa.folderId LEFT JOIN article_notes n ON n.itemId=fi._id WHERE f.deleted=0 AND (f.id=${filter.folderId} OR f.parentId=${filter.folderId}) GROUP BY CASE WHEN coalesce(n.text,'')<>'' THEN 'note:'||fi._id ELSE coalesce(forum_key(fi.link),'item:'||fi._id) END)`
+            )
+        if (filter.unfiled)
+            conditions.push(
+                sql`${itemsTable.kept}=1 AND NOT EXISTS(SELECT 1 FROM folder_articles fa WHERE fa.itemId=${itemsTable._id})`
+            )
+        if (filter.ids)
+            conditions.push(
+                sql`${
+                    itemsTable._id
+                } IN (SELECT value FROM json_each(${JSON.stringify(
+                    filter.ids
+                )}))`
+            )
+        if (filter.tag)
+            conditions.push(
+                sql`EXISTS (SELECT 1 FROM json_each(${itemsTable.tags}) WHERE value=${filter.tag})`
+            )
+        if (filter.laterOnly) conditions.push(eq(itemsTable.readLater, true))
         if (!(type & FilterType.ShowRead))
             conditions.push(eq(itemsTable.hasRead, false))
         if (!(type & FilterType.ShowNotStarred))
             conditions.push(eq(itemsTable.starred, true))
-        if (!(type & FilterType.ShowHidden))
-            conditions.push(eq(itemsTable.hidden, false))
-        if (filter.search !== "") {
-            const pattern = filter.search
-            if (type & FilterType.FullSearch) {
-                if (type & FilterType.CaseInsensitive) {
-                    conditions.push(
-                        sql`(regexpi(${pattern}, ${itemsTable.title}) OR regexpi(${pattern}, ${itemsTable.snippet}))`
-                    )
-                } else {
-                    conditions.push(
-                        sql`(regexp(${pattern}, ${itemsTable.title}) OR regexp(${pattern}, ${itemsTable.snippet}))`
-                    )
-                }
-            } else if (type & FilterType.CreatorSearch) {
-                if (type & FilterType.CaseInsensitive) {
-                    conditions.push(
-                        sql`regexpi(${pattern}, ${itemsTable.creator})`
-                    )
-                } else {
-                    conditions.push(
-                        sql`regexp(${pattern}, ${itemsTable.creator})`
-                    )
-                }
-            } else {
-                if (type & FilterType.CaseInsensitive) {
-                    conditions.push(
-                        sql`regexpi(${pattern}, ${itemsTable.title})`
-                    )
-                } else {
-                    conditions.push(
-                        sql`regexp(${pattern}, ${itemsTable.title})`
-                    )
-                }
-            }
+        if (!(type & FilterType.ShowHidden) && !filter.library)
+            conditions.push(
+                and(
+                    eq(itemsTable.hidden, false),
+                    eq(itemsTable.feedHidden, false)
+                )
+            )
+        const pattern = FeedFilter.pattern(filter)
+        if (pattern !== "") {
+            const fields =
+                type & FilterType.FullSearch
+                    ? type & FilterType.KeywordSearch
+                        ? [
+                              sql`coalesce(${itemsTable.title}, '') || char(10) || coalesce(${itemsTable.snippet}, '')`,
+                          ]
+                        : [itemsTable.title, itemsTable.snippet]
+                    : [
+                          type & FilterType.CreatorSearch
+                              ? itemsTable.creator
+                              : type & FilterType.BodySearch
+                              ? itemsTable.snippet
+                              : itemsTable.title,
+                      ]
+            const match = or(
+                ...fields.map(field =>
+                    type & FilterType.CaseInsensitive
+                        ? sql`regexpi(${pattern}, ${field})`
+                        : sql`regexp(${pattern}, ${field})`
+                )
+            )
+            conditions.push(
+                type & FilterType.ExcludeSearch ? not(match) : match
+            )
         }
         return (await database
             .select()
@@ -143,7 +223,7 @@ export class RSSFeed {
             .where(and(...conditions))
             .orderBy(desc(itemsTable.date), desc(itemsTable._id))
             .offset(skip)
-            .limit(LOAD_QUANTITY)) as unknown as RSSItem[]
+            .limit(limit)) as unknown as RSSItem[]
     }
 }
 
@@ -247,14 +327,26 @@ export function initFeeds(force = false): AppThunk<Promise<void>> {
         dispatch(initFeedsRequest())
         let promises = new Array<Promise<void>>()
         for (let feed of Object.values(getState().feeds)) {
-            if (!feed.loaded || force) {
-                let p = RSSFeed.loadFeed(feed)
+            if (
+                !feed.loaded ||
+                (force && feed._id === getState().page.feedId)
+            ) {
+                const version = beginRequest(feed._id)
+                const isCurrent = () =>
+                    requestVersions.get(feed._id) === version &&
+                    getState().feeds[feed._id]?.filter === feed.filter &&
+                    getState().feeds[feed._id]?.sids === feed.sids
+                let p = RSSFeed.loadFeed(
+                    feed,
+                    0,
+                    Math.max(LOAD_QUANTITY, feed.iids.length)
+                )
                     .then(items => {
-                        dispatch(initFeedSuccess(feed, items))
+                        if (isCurrent()) dispatch(initFeedSuccess(feed, items))
                     })
                     .catch(err => {
                         console.log(err)
-                        dispatch(initFeedFailure(err))
+                        if (isCurrent()) dispatch(initFeedFailure(err))
                     })
                 promises.push(p)
             }
@@ -297,6 +389,11 @@ export function loadMoreFailure(feed: RSSFeed, err): FeedActionTypes {
 export function loadMore(feed: RSSFeed): AppThunk<Promise<void>> {
     return (dispatch, getState) => {
         if (feed.loaded && !feed.loading && !feed.allLoaded) {
+            const version = beginRequest(feed._id)
+            const isCurrent = () =>
+                requestVersions.get(feed._id) === version &&
+                getState().feeds[feed._id]?.filter === feed.filter &&
+                getState().feeds[feed._id]?.sids === feed.sids
             dispatch(loadMoreRequest(feed))
             const state = getState()
             const skipNum = feed.iids.filter(i =>
@@ -304,11 +401,15 @@ export function loadMore(feed: RSSFeed): AppThunk<Promise<void>> {
             ).length
             return RSSFeed.loadFeed(feed, skipNum)
                 .then(items => {
-                    dispatch(loadMoreSuccess(feed, items))
+                    if (isCurrent())
+                        dispatch(
+                            loadMoreSuccess(getState().feeds[feed._id], items)
+                        )
                 })
                 .catch(e => {
                     console.log(e)
-                    dispatch(loadMoreFailure(feed, e))
+                    if (isCurrent())
+                        dispatch(loadMoreFailure(getState().feeds[feed._id], e))
                 })
         }
         return new Promise((_, reject) => {
@@ -362,28 +463,36 @@ export function feedReducer(
             for (let [id, feed] of Object.entries(state)) {
                 nextState[id] = new RSSFeed(
                     id,
-                    feed.sids.filter(sid => sid != action.source.sid),
+                    feed.filter.library
+                        ? feed.sids
+                        : feed.sids.filter(sid => sid != action.source.sid),
                     feed.filter
                 )
             }
             return nextState
         }
-        case APPLY_FILTER: {
-            let nextState = {}
-            for (let [id, feed] of Object.entries(state)) {
-                nextState[id] = {
-                    ...feed,
-                    filter: action.filter,
-                }
+        case APPLY_FILTER:
+            return {
+                ...state,
+                [action.feedId]: new RSSFeed(
+                    action.feedId,
+                    state[action.feedId].sids,
+                    action.filter
+                ),
             }
-            return nextState
-        }
         case FETCH_ITEMS:
             switch (action.status) {
                 case ActionStatus.Success: {
                     let nextState = { ...state }
                     for (let feed of Object.values(state)) {
                         if (feed.loaded) {
+                            if (
+                                feed.filter.folderId !== undefined ||
+                                feed.filter.unfiled
+                            ) {
+                                nextState[feed._id] = { ...feed, loaded: false }
+                                continue
+                            }
                             let items = action.items.filter(
                                 i =>
                                     feed.sids.includes(i.source) &&
@@ -428,6 +537,7 @@ export function feedReducer(
                         [action.feed._id]: {
                             ...action.feed,
                             loaded: true,
+                            loading: false,
                             allLoaded: action.items.length < LOAD_QUANTITY,
                             iids: action.items.map(i => i._id),
                         },
@@ -453,8 +563,10 @@ export function feedReducer(
                             loading: false,
                             allLoaded: action.items.length < LOAD_QUANTITY,
                             iids: [
-                                ...action.feed.iids,
-                                ...action.items.map(i => i._id),
+                                ...new Set([
+                                    ...action.feed.iids,
+                                    ...action.items.map(i => i._id),
+                                ]),
                             ],
                         },
                     }
@@ -469,8 +581,12 @@ export function feedReducer(
                 default:
                     return state
             }
+        case UPDATE_ITEM_META:
         case TOGGLE_HIDDEN: {
-            let nextItem = applyItemReduction(action.item, action.type)
+            let nextItem =
+                action.type === UPDATE_ITEM_META
+                    ? action.item
+                    : applyItemReduction(action.item, action.type)
             let filteredFeeds = Object.values(state).filter(
                 feed =>
                     feed.loaded && !FeedFilter.testItem(feed.filter, nextItem)
@@ -493,23 +609,33 @@ export function feedReducer(
                 case PageType.Sources:
                     return {
                         ...state,
-                        [SOURCE]: new RSSFeed(
-                            SOURCE,
-                            action.sids,
-                            action.filter
-                        ),
+                        [action.menuKey || SOURCE]: (() => {
+                            const id = action.menuKey || SOURCE
+                            const previous = state[id]
+                            return previous &&
+                                JSON.stringify(previous.sids) ===
+                                    JSON.stringify(action.sids) &&
+                                JSON.stringify(previous.filter) ===
+                                    JSON.stringify(action.filter)
+                                ? { ...previous, loaded: false }
+                                : new RSSFeed(id, action.sids, action.filter)
+                        })(),
                     }
                 case PageType.AllArticles:
-                    return action.init
-                        ? {
-                              ...state,
-                              [ALL]: {
-                                  ...state[ALL],
-                                  loaded: false,
-                                  filter: action.filter,
-                              },
-                          }
-                        : state
+                    if (
+                        !action.init &&
+                        JSON.stringify(state[ALL].filter) ===
+                            JSON.stringify(action.filter)
+                    )
+                        return state
+                    return {
+                        ...state,
+                        [ALL]: {
+                            ...state[ALL],
+                            loaded: false,
+                            filter: action.filter,
+                        },
+                    }
                 default:
                     return state
             }

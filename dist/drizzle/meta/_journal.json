@@ -15,6 +15,41 @@
       "when": 1793299496420,
       "tag": "0001_brief_spitfire",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794269074502,
+      "tag": "0002_optimal_quentin_quire",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794287118027,
+      "tag": "0003_tired_silver_surfer",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794296030245,
+      "tag": "0004_odd_speed",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794655181621,
+      "tag": "0005_daily_stick",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794655277686,
+      "tag": "0006_aspiring_typhoid_mary",
+      "breakpoints": true
     }
   ]
 }

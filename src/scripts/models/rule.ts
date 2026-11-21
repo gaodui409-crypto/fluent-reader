@@ -6,14 +6,19 @@ import {
     RuleTargetKey,
     SourceGroup,
     StoredRule,
+    RuleCondition,
 } from "../../schema-types"
+import { matchesConditions } from "../../rule-conditions"
 import type { AppThunk } from "../utils"
+import intl from "react-intl-universal"
 
 export const enum ItemAction {
     Read = "r",
     Star = "s",
     Hide = "h",
     Notify = "n",
+    Later = "l",
+    Offline = "o",
 }
 
 export type RuleActions = {
@@ -50,12 +55,23 @@ const actionTransform: ActionTransformType = {
     [ItemAction.Notify]: (i, f) => {
         i.notify = f
     },
+    [ItemAction.Later]: (i, f) => {
+        i.readLater = f
+    },
+    [ItemAction.Offline]: (i, f) => {
+        i.saveRequested = f
+    },
 }
 
 export class ArticleRule {
     filter: FeedFilter
     match: boolean
     actions: RuleActions
+    enabled = true
+    conditions?: RuleCondition[]
+    logic: "all" | "any" = "all"
+    highlight = ""
+    tags: string[] = []
 
     constructor(
         regex: string,
@@ -69,12 +85,18 @@ export class ArticleRule {
     }
 
     static fromStored(rule: StoredRule): ArticleRule {
-        return new ArticleRule(
+        const result = new ArticleRule(
             rule.search,
             rule.actions,
             rule.filter,
             rule.match
         )
+        result.enabled = rule.enabled !== false
+        result.conditions = rule.conditions
+        result.logic = rule.logic || "all"
+        result.highlight = rule.highlight || ""
+        result.tags = rule.tags || []
+        return result
     }
 
     static toStored(rule: ArticleRule): StoredRule {
@@ -83,15 +105,30 @@ export class ArticleRule {
             search: rule.filter.search,
             match: rule.match,
             actions: RuleActions.toKeys(rule.actions),
+            enabled: rule.enabled,
+            conditions: rule.conditions,
+            logic: rule.logic,
+            highlight: rule.highlight,
+            tags: rule.tags,
         }
     }
 
+    static matches(rule: ArticleRule, item: RSSItem) {
+        if (rule.enabled === false) return false
+        let result = rule.conditions
+            ? matchesConditions(rule.conditions, rule.logic, item)
+            : FeedFilter.testItem(rule.filter, item)
+        return result === rule.match
+    }
+
     static apply(rule: ArticleRule, item: RSSItem) {
-        let result = FeedFilter.testItem(rule.filter, item)
-        if (result === rule.match) {
+        if (ArticleRule.matches(rule, item)) {
             for (let [action, flag] of Object.entries(rule.actions)) {
-                actionTransform[action](item, flag)
+                actionTransform[action]?.(item, flag)
             }
+            if (rule.highlight) item.highlight = rule.highlight
+            if (rule.tags.length)
+                item.tags = [...new Set([...(item.tags || []), ...rule.tags])]
         }
     }
 
@@ -131,12 +168,20 @@ export function ruleReducer(
 
 export function initRules(): AppThunk {
     return dispatch => {
-        const rules = Object.fromEntries(
-            Object.entries(window.settings.getAllRules()).map(
-                ([key, rules]) => [key, rules.map(ArticleRule.fromStored)]
+        try {
+            const rules = Object.fromEntries(
+                Object.entries(window.settings.getAllRules()).map(
+                    ([key, rules]) => [key, rules.map(ArticleRule.fromStored)]
+                )
+            ) as RuleState
+            dispatch({ type: INIT_RULES, rules })
+        } catch (error) {
+            dispatch({ type: INIT_RULES, rules: {} })
+            window.utils.showErrorBox(
+                intl.get("personal.rulesLoadError"),
+                String(error)
             )
-        ) as RuleState
-        dispatch({ type: INIT_RULES, rules })
+        }
     }
 }
 

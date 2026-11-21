@@ -31,6 +31,7 @@ const rssParser = new Parser({
             "image",
             ["content:encoded", "fullContent"],
             ["media:content", "mediaContent", { keepArray: true }],
+            ["media:thumbnail", "mediaThumbnails", { keepArray: true }],
         ],
     },
 })
@@ -81,22 +82,42 @@ export async function decodeFetchResponse(response: Response, isHTML = false) {
 }
 
 export async function parseRSS(url: string) {
-    let result: Response
-    try {
-        result = await fetch(url, { credentials: "omit" })
-    } catch {
-        throw new Error(intl.get("log.networkError"))
-    }
-    if (result && result.ok) {
+    if (window.personal?.feedText) {
+        const text = await window.personal.feedText(url)
         try {
-            return await rssParser.parseString(
-                await decodeFetchResponse(result)
-            )
+            return await rssParser.parseString(text)
         } catch {
             throw new Error(intl.get("log.parseError"))
         }
-    } else {
-        throw new Error(result.status + " " + result.statusText)
+    }
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30000)
+    try {
+        const result = await fetch(url, {
+            credentials: "omit",
+            cache: "no-cache",
+            signal: controller.signal,
+        })
+        if (!result.ok) throw new Error(result.status + " " + result.statusText)
+        // Keep the deadline active while receiving the body, not only headers.
+        const text = await decodeFetchResponse(result)
+        try {
+            return await rssParser.parseString(text)
+        } catch {
+            throw new Error(intl.get("log.parseError"))
+        }
+    } catch (error) {
+        if (controller.signal.aborted)
+            throw new Error(
+                intl
+                    .get("refresh.timeout")
+                    .d("Feed request timed out after 30 seconds.")
+            )
+        if (error instanceof TypeError)
+            throw new Error(intl.get("log.networkError"))
+        throw error
+    } finally {
+        clearTimeout(timeout)
     }
 }
 

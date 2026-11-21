@@ -14,6 +14,7 @@ import {
     updateFavicon,
 } from "./source"
 import { createSourceGroup, addSourceToGroup } from "./group"
+import intl from "react-intl-universal"
 
 import { feverServiceHooks } from "./services/fever"
 import { feedbinServiceHooks } from "./services/feedbin"
@@ -171,7 +172,7 @@ function updateSources(
                     dispatch(addSourceToGroup(gid, source.sid))
                 }
             }
-            const configs = getState().service
+            const configs = { ...getState().service }
             delete configs.importGroups
             dispatch(saveServiceConfigs(configs))
         }
@@ -253,10 +254,10 @@ function fetchItems(
         if (items.length > 0) {
             const inserted = await insertItems(items)
             dispatch(fetchItemsSuccess(inserted.reverse(), getState().items))
+            for (let item of inserted) {
+                if (item.notify) dispatch(pushNotification(item))
+            }
             if (background) {
-                for (let item of inserted) {
-                    if (item.notify) dispatch(pushNotification(item))
-                }
                 if (inserted.length > 0) window.utils.requestAttention()
             }
         }
@@ -268,7 +269,7 @@ function fetchItems(
 
 export function importGroups(): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
-        const configs = getState().service
+        const configs = { ...getState().service }
         if (configs.type !== SyncService.None) {
             dispatch(saveSettings())
             configs.importGroups = true
@@ -321,7 +322,13 @@ export type ServiceActionTypes =
 
 export function saveServiceConfigs(configs: ServiceConfigs): AppThunk {
     return dispatch => {
-        window.settings.setServiceConfigs(configs)
+        void Promise.resolve(window.settings.setServiceConfigs(configs)).catch(
+            error =>
+                window.utils.showErrorBox(
+                    intl.get("personal.failed"),
+                    String(error)
+                )
+        )
         dispatch({
             type: SAVE_SERVICE_CONFIGS,
             configs: configs,

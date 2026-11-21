@@ -83,6 +83,10 @@ export class AppState {
     fetchingProgress = 0
     fetchingTotal = 0
     lastFetched = new Date()
+    refreshRunning = false
+    refreshCompletedAt = 0
+    refreshAdded = 0
+    refreshFailures = 0
     menu = getWindowBreakpoint() && window.settings.getDefaultMenu()
     menuKey = ALL
     title = ""
@@ -318,43 +322,60 @@ let fetchTimeout: NodeJS.Timeout
 export function setupAutoFetch(): AppThunk {
     return (dispatch, getState) => {
         clearTimeout(fetchTimeout)
-        const setupTimeout = (interval?: number) => {
-            if (!interval) interval = window.settings.getFetchInterval()
-            if (interval) {
-                fetchTimeout = setTimeout(() => {
-                    let state = getState()
-                    if (!state.app.settings.display) {
-                        if (!state.app.fetchingItems) dispatch(fetchItems(true))
-                    } else {
-                        setupTimeout(1)
-                    }
-                }, interval * 60000)
+        const interval = window.settings.getFetchInterval()
+        if (!interval) return
+        const remaining =
+            interval * 60000 -
+            (Date.now() - getState().app.lastFetched.getTime())
+        fetchTimeout = setTimeout(async () => {
+            try {
+                await dispatch(refreshIfDue())
+            } catch (error) {
+                console.error(error)
+            } finally {
+                // Also re-arm when settings, an active fetch or a failure deferred work.
+                dispatch(setupAutoFetch())
             }
-        }
-        setupTimeout()
+        }, Math.max(1000, Math.min(interval * 60000, remaining)))
     }
+}
+
+export function refreshIfDue(reconnected = false): AppThunk<Promise<void>> {
+    return async (dispatch, getState) => {
+        const state = getState().app
+        const interval = window.settings.getFetchInterval()
+        if (
+            !interval ||
+            !state.sourceInit ||
+            !state.feedInit ||
+            state.settings.display ||
+            state.fetchingItems ||
+            state.syncing ||
+            state.refreshRunning ||
+            globalThis.navigator?.onLine === false
+        )
+            return
+        const elapsed = Date.now() - state.lastFetched.getTime()
+        if (elapsed < 0 || elapsed >= (reconnected ? 60000 : interval * 60000))
+            await dispatch(fetchItems(true))
+    }
+}
+
+export const REFRESH_STATUS = "REFRESH_STATUS"
+export interface RefreshStatusAction {
+    type: typeof REFRESH_STATUS
+    phase: "start" | "finish" | "error"
 }
 
 export function pushNotification(item: RSSItem): AppThunk {
     return (dispatch, getState) => {
         const sourceName = getState().sources[item.source].name
-        if (!window.utils.isFocused()) {
-            const options = { body: sourceName } as any
-            if (item.thumb) options.icon = item.thumb
-            const notification = new Notification(item.title, options)
-            notification.onclick = () => {
-                const state = getState()
-                if (
-                    state.sources[item.source].openTarget ===
-                    SourceOpenTarget.External
-                ) {
-                    window.utils.openExternal(item.link)
-                } else if (!state.app.settings.display) {
-                    window.utils.focus()
-                    dispatch(showItemFromId(item._id))
-                }
-            }
-        }
+        void window.personal.notifyItem(item._id).catch(error => {
+            window.utils.showErrorBox(
+                intl.get("personal.failed"),
+                String(error)
+            )
+        })
         dispatch({
             type: PUSH_NOTIFICATION,
             iid: item._id,
@@ -429,6 +450,7 @@ export function appReducer(
         | InitIntlAction
         | MenuActionTypes
         | LogMenuActionType
+        | RefreshStatusAction
         | FeedActionTypes
         | PageActionTypes
         | SourceGroupActionTypes
@@ -507,6 +529,7 @@ export function appReducer(
                     return {
                         ...state,
                         syncing: false,
+                        refreshFailures: state.refreshFailures + 1,
                         logMenu: {
                             ...state.logMenu,
                             notify: true,
@@ -526,6 +549,23 @@ export function appReducer(
                         syncing: false,
                     }
             }
+        case REFRESH_STATUS:
+            if (action.phase === "start")
+                return {
+                    ...state,
+                    refreshRunning: true,
+                    refreshAdded: 0,
+                    refreshFailures: 0,
+                    lastFetched: new Date(),
+                }
+            if (action.phase === "error")
+                return { ...state, refreshFailures: state.refreshFailures + 1 }
+            return {
+                ...state,
+                refreshRunning: false,
+                fetchingItems: false,
+                refreshCompletedAt: Date.now(),
+            }
         case FETCH_ITEMS:
             switch (action.status) {
                 case ActionStatus.Request:
@@ -538,6 +578,7 @@ export function appReducer(
                 case ActionStatus.Failure:
                     return {
                         ...state,
+                        refreshFailures: state.refreshFailures + 1,
                         logMenu: {
                             ...state.logMenu,
                             notify: !state.logMenu.display,
@@ -556,6 +597,7 @@ export function appReducer(
                 case ActionStatus.Success:
                     return {
                         ...state,
+                        refreshAdded: state.refreshAdded + action.items.length,
                         fetchingItems: false,
                         fetchingTotal: 0,
                         logMenu:

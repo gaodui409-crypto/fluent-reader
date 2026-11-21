@@ -14,7 +14,12 @@ if (!process.mas) {
 
 if (!app.isPackaged) app.setAppUserModelId(process.execPath)
 else if (process.platform === "win32")
-    app.setAppUserModelId("me.hyliu.fluentreader")
+    app.setAppUserModelId(
+        app.getName() === "fluent-reader-personal" ||
+            app.getName() === "Fluent Reader Personal"
+            ? "local.fluentreader.personal"
+            : "me.hyliu.fluentreader"
+    )
 
 let restarting = false
 

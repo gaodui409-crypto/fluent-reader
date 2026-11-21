@@ -27,6 +27,7 @@ import {
     updateRulesForTarget,
 } from "./rule"
 import { fixBrokenGroups } from "./group"
+import { loadPreferences } from "./preferences"
 
 export const enum SourceOpenTarget {
     Local,
@@ -53,6 +54,7 @@ export class RSSSource {
     fetchFrequency: number // in minutes
     textDir: SourceTextDirection
     hidden: boolean
+    archived?: boolean
 
     constructor(url: string, name: string = null) {
         this.url = url
@@ -77,7 +79,8 @@ export class RSSSource {
         i: RSSItem,
         item: MyParserItem,
         rules: ArticleRule[],
-        hasPublicationDate: boolean
+        hasPublicationDate: boolean,
+        feedURL: string
     ): Promise<RSSItem> {
         const legacyMatch = and(
             eq(itemsTable.title, i.title),
@@ -93,7 +96,7 @@ export class RSSSource {
               )
             : legacyMatch
         const existing = await database
-            .select({ _id: itemsTable._id })
+            .select({ _id: itemsTable._id, thumb: itemsTable.thumb })
             .from(itemsTable)
             .where(
                 and(
@@ -104,10 +107,19 @@ export class RSSSource {
             )
             .limit(1)
         if (existing.length === 0) {
-            RSSItem.parseContent(i, item)
+            RSSItem.parseContent(i, item, feedURL)
             ArticleRule.applyAll(rules, i)
             return i
         } else {
+            if (!existing[0].thumb) {
+                RSSItem.parseContent(i, item, feedURL)
+                if (i.thumb) {
+                    await database
+                        .update(itemsTable)
+                        .set({ thumb: i.thumb })
+                        .where(eq(itemsTable._id, existing[0]._id))
+                }
+            }
             return null
         }
     }
@@ -144,15 +156,30 @@ export class RSSSource {
                 }
             }
             pending.push(
-                this.checkItem(parsed, item, rules, hasPublicationDate)
+                this.checkItem(
+                    parsed,
+                    item,
+                    rules,
+                    hasPublicationDate,
+                    source.url
+                )
             )
         }
         return (await Promise.all(pending)).filter(item => item != null)
     }
 
     static async fetchItems(source: RSSSource, rules: ArticleRule[]) {
-        let feed = await parseRSS(source.url)
-        return await this.checkItems(source, feed.items, rules)
+        try {
+            const feed = await parseRSS(source.url)
+            const items = await this.checkItems(source, feed.items, rules)
+            await window.personal.reportFetch?.(source.sid).catch(console.error)
+            return items
+        } catch (error) {
+            await window.personal
+                .reportFetch?.(source.sid, String(error))
+                .catch(console.error)
+            throw error
+        }
     }
 }
 
@@ -243,7 +270,13 @@ async function unreadCount(sources: SourceState): Promise<SourceState> {
             count: count(itemsTable._id),
         })
         .from(itemsTable)
-        .where(eq(itemsTable.hasRead, false))
+        .where(
+            and(
+                eq(itemsTable.hasRead, false),
+                eq(itemsTable.hidden, false),
+                eq(itemsTable.feedHidden, false)
+            )
+        )
         .groupBy(itemsTable.source)
     for (const row of rows) {
         if (sources[row.source]) {
@@ -273,6 +306,7 @@ export function initSources(): AppThunk<Promise<void>> {
     return async dispatch => {
         dispatch(initSourcesRequest())
         await init()
+        await dispatch(loadPreferences())
         const sourcesData = await database.select().from(sourcesTable)
         dispatch(initRules())
         const state: SourceState = {}
@@ -282,7 +316,15 @@ export function initSources(): AppThunk<Promise<void>> {
             state[source.sid] = rssSource
         }
         await unreadCount(state)
-        dispatch(fixBrokenGroups(state))
+        dispatch(
+            fixBrokenGroups(
+                Object.fromEntries(
+                    Object.entries(state).filter(
+                        ([, source]) => !source.archived
+                    )
+                )
+            )
+        )
         dispatch(initSourcesSuccess(state))
     }
 }
@@ -323,6 +365,29 @@ export function insertSource(source: RSSSource): AppThunk<Promise<RSSSource>> {
         return new Promise((resolve, reject) => {
             insertPromises = insertPromises.then(async () => {
                 try {
+                    const [existing] = await database
+                        .select()
+                        .from(sourcesTable)
+                        .where(eq(sourcesTable.url, source.url))
+                    if (existing?.archived) {
+                        source.sid = existing.sid
+                        source.archived = false
+                        source.hidden = false
+                        source.openTarget = existing.openTarget
+                        source.textDir = existing.textDir
+                        source.fetchFrequency = existing.fetchFrequency
+                        await database
+                            .update(sourcesTable)
+                            .set({
+                                archived: false,
+                                hidden: false,
+                                name: source.name,
+                                serviceRef: source.serviceRef || null,
+                            })
+                            .where(eq(sourcesTable.sid, source.sid))
+                        resolve(source)
+                        return
+                    }
                     const result = await database
                         .select({ maxSid: max(sourcesTable.sid) })
                         .from(sourcesTable)
@@ -367,7 +432,8 @@ export function insertSource(source: RSSSource): AppThunk<Promise<RSSSource>> {
 export function addSource(
     url: string,
     name: string = null,
-    batch = false
+    batch = false,
+    quiet = false
 ): AppThunk<Promise<number>> {
     return async (dispatch, getState) => {
         const app = getState().app
@@ -387,16 +453,15 @@ export function addSource(
                     })
                 )
                 await insertItems(items)
-                inserted.unreadCount = items.filter(
-                    item => !item.hasRead
-                ).length
+                inserted.unreadCount = 0
+                await unreadCount({ [inserted.sid]: inserted })
                 dispatch(addSourceSuccess(inserted, batch))
                 window.settings.saveGroups(getState().groups)
                 dispatch(updateFavicon([inserted.sid]))
                 return inserted.sid
             } catch (e) {
                 dispatch(addSourceFailure(e, batch))
-                if (!batch) {
+                if (!batch && !quiet) {
                     window.utils.showErrorBox(
                         intl.get("sources.errorAdd"),
                         String(e),
@@ -430,6 +495,7 @@ export function updateSource(source: RSSSource): AppThunk<Promise<void>> {
             fetchFrequency: source.fetchFrequency || 0,
             textDir: source.textDir || 0,
             hidden: source.hidden || false,
+            archived: source.archived || false,
         }
         await database
             .insert(sourcesTable)
@@ -459,13 +525,17 @@ export function deleteSource(
             await dispatch(
                 updateRulesForTarget({ type: "source", sid: source.sid }, [])
             )
-            await database
-                .delete(itemsTable)
-                .where(eq(itemsTable.source, source.sid))
-            await database
-                .delete(sourcesTable)
-                .where(eq(sourcesTable.sid, source.sid))
+            await window.personal.archiveRetireSource(source.sid)
             dispatch(deleteSourceDone(source))
+            const [retained] = await database
+                .select()
+                .from(sourcesTable)
+                .where(eq(sourcesTable.sid, source.sid))
+            if (retained)
+                dispatch({
+                    type: UPDATE_SOURCE,
+                    source: { ...retained, unreadCount: 0 } as RSSSource,
+                })
             window.settings.saveGroups(getState().groups)
         } catch (err) {
             console.log(err)
@@ -566,7 +636,7 @@ export function sourceReducer(
                 case ActionStatus.Success: {
                     let updateMap = new Map<number, number>()
                     for (let item of action.items) {
-                        if (!item.hasRead) {
+                        if (!item.hasRead && !item.hidden && !item.feedHidden) {
                             updateMap.set(
                                 item.source,
                                 updateMap.has(item.source)
@@ -602,7 +672,11 @@ export function sourceReducer(
                     ...state[action.item.source],
                     unreadCount:
                         state[action.item.source].unreadCount +
-                        (action.type === MARK_UNREAD ? 1 : -1),
+                        (action.item.hidden || action.item.feedHidden
+                            ? 0
+                            : action.type === MARK_UNREAD
+                            ? 1
+                            : -1),
                 } as RSSSource,
             }
         case MARK_ALL_READ: {

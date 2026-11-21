@@ -1,4 +1,6 @@
 import * as React from "react"
+import { openOrganize } from "./personal/organize"
+import { ReadingControls } from "./personal/reading-controls"
 import { useState, useEffect, useCallback } from "react"
 import intl from "react-intl-universal"
 import { Icon } from "@fluentui/react/lib/Icon"
@@ -31,7 +33,18 @@ import {
 
 const useClasses = makeStyles({
     nav: {
-        display: "flex",
+        "display": "flex",
+        "&.searching .refresh-status": { display: "none" },
+        "@media (max-width:1000px)": {
+            "&.searching .reading-controls, &.searching #log-toggle, &.searching #full-search-toggle":
+                { display: "none" },
+        },
+        "@media (max-width:800px)": {
+            "&.searching button": { width: "36px" },
+            "&.searching #mark-all-toggle, &.searching #view-toggle": {
+                display: "none",
+            },
+        },
     },
     navContent: {
         flexGrow: 1,
@@ -79,9 +92,21 @@ const useClasses = makeStyles({
     navGroupRight: {
         float: "right",
     },
+    refreshStatus: {
+        "display": "inline-block",
+        "maxWidth": "180px",
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+        "whiteSpace": "nowrap",
+        "verticalAlign": "middle",
+        "fontSize": "12px",
+        "color": "var(--neutralSecondary)",
+        "@media (max-width: 1000px)": { maxWidth: "95px" },
+    },
 })
 
 const Nav: React.FC = () => {
+    const searchOn = useAppSelector(state => state.page.searchOn)
     const classes = useClasses()
     const dispatch = useAppDispatch()
     const state = useAppSelector(state => state.app)
@@ -127,12 +152,19 @@ const Nav: React.FC = () => {
             state.sourceInit &&
             state.feedInit &&
             !state.syncing &&
-            !state.fetchingItems,
-        [state.sourceInit, state.feedInit, state.syncing, state.fetchingItems]
+            !state.fetchingItems &&
+            !state.refreshRunning,
+        [
+            state.sourceInit,
+            state.feedInit,
+            state.syncing,
+            state.fetchingItems,
+            state.refreshRunning,
+        ]
     )
 
     const fetch = useCallback(() => {
-        if (canFetch()) dispatch(fetchItems())
+        if (canFetch()) void dispatch(fetchItems()).catch(console.error)
     }, [canFetch, dispatch])
 
     const menu = useCallback(() => dispatch(toggleMenu()), [dispatch])
@@ -140,7 +172,7 @@ const Nav: React.FC = () => {
     const search = useCallback(() => dispatch(toggleSearch()), [dispatch])
     const settings = useCallback(() => dispatch(toggleSettings()), [dispatch])
     const markAll = useCallback(() => dispatch(openMarkAllMenu()), [dispatch])
-    const markAllDirect = useCallback(() => dispatch(markAllRead()), [dispatch])
+    const markAllDirect = useCallback(openOrganize, [])
     const views = useCallback(() => {
         if (state.contextMenu.event !== "#view-toggle") {
             dispatch(openViewMenu())
@@ -243,6 +275,7 @@ const Nav: React.FC = () => {
                 classes.nav,
                 state.settings.display && "hide-btns",
                 state.menu && "menu-on",
+                searchOn && "searching",
                 articleOverlayOpen && "item-on",
                 isBlurred && classes.navBlurred
             )}>
@@ -265,10 +298,42 @@ const Nav: React.FC = () => {
                         </FlatButton>
                     </FlatButtonGroup>
                 )}
-                <span className="title">{state.title}</span>
+                <span
+                    className="title"
+                    style={{ visibility: searchOn ? "hidden" : undefined }}>
+                    {state.title}
+                </span>
                 <FlatButtonGroup styleClass={classes.navGroupRight}>
                     {isNonNavButtonShown && (
                         <>
+                            {(state.refreshRunning ||
+                                state.refreshCompletedAt > 0) && (
+                                <span
+                                    className={mergeClasses(
+                                        "refresh-status",
+                                        classes.refreshStatus
+                                    )}
+                                    role="status"
+                                    aria-live="polite"
+                                    title={intl.get("refresh.explanation")}>
+                                    {state.refreshRunning
+                                        ? intl.get("refresh.working")
+                                        : intl.get("refresh.result", {
+                                              time: new Date(
+                                                  state.refreshCompletedAt
+                                              ).toLocaleTimeString([], {
+                                                  hour: "2-digit",
+                                                  minute: "2-digit",
+                                              }),
+                                              count: state.refreshAdded,
+                                          })}
+                                    {!state.refreshRunning &&
+                                        state.refreshFailures > 0 &&
+                                        intl.get("refresh.failures", {
+                                            count: state.refreshFailures,
+                                        })}
+                                </span>
+                            )}
                             <FlatButton
                                 styleClass={classes.navBtn}
                                 fetching={isFetching}
@@ -281,7 +346,7 @@ const Nav: React.FC = () => {
                                 styleClass={classes.navBtn}
                                 id="mark-all-toggle"
                                 onClick={markAll}
-                                title={intl.get("nav.markAllRead")}
+                                title="快捷标为已读"
                                 onMouseDown={e => {
                                     if (
                                         state.contextMenu.event ===
@@ -290,6 +355,12 @@ const Nav: React.FC = () => {
                                         e.stopPropagation()
                                 }}>
                                 <Icon iconName="InboxCheck" />
+                            </FlatButton>
+                            <FlatButton
+                                styleClass={classes.navBtn}
+                                title="筛选归档"
+                                onClick={() => openOrganize()}>
+                                <Icon iconName="Filter" />
                             </FlatButton>
                             <FlatButton
                                 styleClass={classes.navBtn}
@@ -302,6 +373,9 @@ const Nav: React.FC = () => {
                                     <Icon iconName="Ringer" />
                                 )}
                             </FlatButton>
+                            <span className="reading-controls">
+                                <ReadingControls />
+                            </span>
                             <FlatButton
                                 styleClass={classes.navBtn}
                                 id="view-toggle"
@@ -321,6 +395,17 @@ const Nav: React.FC = () => {
                                 title={intl.get("nav.settings")}
                                 onClick={settings}>
                                 <Icon iconName="Settings" />
+                            </FlatButton>
+                            <FlatButton
+                                styleClass={classes.navBtn}
+                                title={intl.get("personal.search")}
+                                id="full-search-toggle"
+                                onClick={() =>
+                                    window.dispatchEvent(
+                                        new Event("personal-search")
+                                    )
+                                }>
+                                <Icon iconName="SearchAndApps" />
                             </FlatButton>
                         </>
                     )}

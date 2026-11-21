@@ -9,6 +9,10 @@ import { groupReducer } from "./models/group"
 import { pageReducer } from "./models/page"
 import { serviceReducer } from "./models/service"
 import { ruleReducer } from "./models/rule"
+import { preferencesReducer } from "./models/preferences"
+import { libraryReducer } from "./models/library"
+import { readingReducer } from "./models/reading"
+import { organizeReducer } from "./models/organize"
 import { AppDispatch } from "./utils"
 import {
     TypedUseSelectorHook,
@@ -18,7 +22,11 @@ import {
 } from "react-redux"
 
 export const rootReducer = combineReducers({
+    reading: readingReducer,
+    organize: organizeReducer,
     sources: sourceReducer,
+    preferences: preferencesReducer,
+    library: libraryReducer,
     rules: ruleReducer,
     items: itemReducer,
     feeds: feedReducer,

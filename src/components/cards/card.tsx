@@ -4,6 +4,8 @@ import { RSSItem } from "../../scripts/models/item"
 import { platformCtrl } from "../../scripts/utils"
 import { FeedFilter } from "../../scripts/models/feed"
 import { ViewConfigs } from "../../schema-types"
+import { rootStore } from "../../scripts/reducer"
+import { resolveSourcePreferences } from "../../source-preferences"
 
 export namespace Card {
     export type Props = {
@@ -20,11 +22,15 @@ export namespace Card {
     }
 
     const openInBrowser = (props: Props, e: React.MouseEvent) => {
+        void window.personal.opened?.(props.item._id).catch(console.error)
         props.markRead(props.item)
         window.utils.openExternal(props.item.link, platformCtrl(e))
     }
 
     export const bindEventsToProps = (props: Props) => ({
+        style: props.item.highlight
+            ? { boxShadow: `inset 4px 0 ${props.item.highlight}` }
+            : undefined,
         onClick: (e: React.MouseEvent) => onClick(props, e),
         onMouseUp: (e: React.MouseEvent) => onMouseUp(props, e),
         onKeyDown: (e: React.KeyboardEvent) => onKeyDown(props, e),
@@ -33,7 +39,15 @@ export namespace Card {
     const onClick = (props: Props, e: React.MouseEvent) => {
         e.preventDefault()
         e.stopPropagation()
-        switch (props.source.openTarget) {
+        const state = rootStore.getState()
+        switch (
+            state.reading.collections[state.app.menuKey]?.openTarget ??
+            resolveSourcePreferences(
+                props.source,
+                state.groups,
+                state.preferences
+            ).openTarget
+        ) {
             case SourceOpenTarget.External: {
                 openInBrowser(props, e)
                 break

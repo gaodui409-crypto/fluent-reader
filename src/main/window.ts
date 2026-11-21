@@ -40,6 +40,7 @@ export class WindowManager {
                 name: "main",
                 windowStatePersistence: true,
                 title: "Fluent Reader",
+                icon: path.join(__dirname, "icons", "app.png"),
                 backgroundColor:
                     process.platform === "darwin"
                         ? "#00000000"
@@ -58,6 +59,8 @@ export class WindowManager {
                 webPreferences: {
                     webviewTag: true,
                     contextIsolation: true,
+                    nodeIntegration: false,
+                    sandbox: true,
                     spellcheck: false,
                     preload: path.join(
                         app.getAppPath(),
@@ -65,6 +68,39 @@ export class WindowManager {
                     ),
                 },
             })
+            if (process.platform === "win32" && app.isPackaged) {
+                const personal = [
+                    "fluent-reader-personal",
+                    "Fluent Reader Personal",
+                ].includes(app.getName())
+                // Explorer's relaunch icon is separate from WM_SETICON. Point it
+                // at the executable, not an image inside ASAR that Explorer cannot read.
+                const quotePath = (value: string) =>
+                    '"' + value.replace(/(\\+)$/, "$1$1") + '"'
+                this.mainWindow.setAppDetails({
+                    appId: personal
+                        ? "local.fluentreader.personal"
+                        : "me.hyliu.fluentreader",
+                    appIconPath: process.execPath,
+                    appIconIndex: 0,
+                    relaunchCommand:
+                        quotePath(process.execPath) +
+                        " --user-data-dir=" +
+                        quotePath(app.getPath("userData")),
+                    relaunchDisplayName: app.getName(),
+                })
+            }
+            this.mainWindow.webContents.on(
+                "will-attach-webview",
+                (_, preferences, params) => {
+                    preferences.nodeIntegration = false
+                    preferences.contextIsolation = true
+                    preferences.sandbox = true
+                    delete preferences.preload
+                    if (/^https?:/i.test(params.src))
+                        preferences.partition = "persist:sandbox"
+                }
+            )
             this.mainWindow.on("ready-to-show", () => {
                 this.mainWindow.show()
                 this.mainWindow.focus()

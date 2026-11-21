@@ -38,10 +38,17 @@ export function setUtilsListeners(manager: WindowManager) {
                     details.disposition === "background-tab"
                 )
             return {
-                action: manager.hasWindow() ? "deny" : "allow",
+                action: "deny",
             }
         })
         contents.on("will-navigate", (event, url) => {
+            // Login and rendered-page windows share the persistent web session.
+            // They have no preload, Node integration, or app bridge.
+            if (
+                contents.session === session.fromPartition("persist:sandbox") &&
+                /^https?:\/\//i.test(url)
+            )
+                return
             event.preventDefault()
             if (contents.getType() === "webview") openExternal(url)
         })

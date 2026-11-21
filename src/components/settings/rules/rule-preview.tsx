@@ -8,6 +8,7 @@ import { RSSItem } from "../../../scripts/models/item"
 import { RSSSource } from "../../../scripts/models/source"
 import { MyParserItem } from "../../../scripts/utils"
 import { useStyles } from "./styles"
+import { RecentRulePreview } from "./recent-preview"
 
 type RulePreviewProps = {
     target: RuleTarget
@@ -43,6 +44,11 @@ export function RulePreview({ target, rules, saving }: RulePreviewProps) {
 
     return (
         <fieldset className={classes.fieldset} disabled={saving}>
+            <RecentRulePreview
+                target={target}
+                rules={rules}
+                disabled={saving}
+            />
             <Text weight="semibold">{intl.get("rules.test")}</Text>
             <div className={classes.row}>
                 <Input
