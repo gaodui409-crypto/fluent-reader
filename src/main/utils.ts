@@ -16,6 +16,15 @@ const webviewInputFocused = `(() => {
 })()`
 
 export function setUtilsListeners(manager: WindowManager) {
+    const sendMain = (channel: string, ...args: unknown[]) => {
+        if (
+            manager.hasWindow() &&
+            !manager.mainWindow.webContents.isDestroyed()
+        ) {
+            manager.mainWindow.webContents.send(channel, ...args)
+        }
+    }
+
     async function openExternal(url: string, background = false) {
         if (url.startsWith("https://") || url.startsWith("http://")) {
             if (background && process.platform === "darwin") {
@@ -23,7 +32,10 @@ export function setUtilsListeners(manager: WindowManager) {
             } else if (background && manager.hasWindow()) {
                 manager.mainWindow.setAlwaysOnTop(true)
                 await shell.openExternal(url)
-                setTimeout(() => manager.mainWindow.setAlwaysOnTop(false), 1000)
+                setTimeout(() => {
+                    if (manager.hasWindow())
+                        manager.mainWindow.setAlwaysOnTop(false)
+                }, 1000)
             } else {
                 shell.openExternal(url)
             }
@@ -66,6 +78,7 @@ export function setUtilsListeners(manager: WindowManager) {
         "show-error-box",
         async (_, title, content, copy?: string) => {
             if (manager.hasWindow() && copy != null) {
+                const okLabel = app.getLocale().startsWith("zh") ? "确定" : "OK"
                 const response = await dialog.showMessageBox(
                     manager.mainWindow,
                     {
@@ -73,7 +86,8 @@ export function setUtilsListeners(manager: WindowManager) {
                         title: title,
                         message: title,
                         detail: content,
-                        buttons: ["OK", copy],
+                        buttons: [okLabel, copy],
+                        noLink: true,
                         cancelId: 0,
                         defaultId: 0,
                     }
@@ -96,10 +110,8 @@ export function setUtilsListeners(manager: WindowManager) {
                     title: title,
                     message: title,
                     detail: message,
-                    buttons:
-                        process.platform === "win32"
-                            ? ["Yes", "No"]
-                            : [confirm, cancel],
+                    buttons: [confirm, cancel],
+                    noLink: true,
                     cancelId: 1,
                     defaultId: defaultCancel ? 1 : 0,
                 })
@@ -144,14 +156,19 @@ export function setUtilsListeners(manager: WindowManager) {
                     filters: filters,
                     properties: ["openFile"],
                 })
-                if (!response.canceled) {
+                if (!response.canceled && response.filePaths.length > 0) {
                     try {
                         return await fs.promises.readFile(
                             response.filePaths[0],
                             "utf-8"
                         )
                     } catch (err) {
-                        console.log(err)
+                        dialog.showErrorBox(
+                            app.getLocale().startsWith("zh")
+                                ? "无法读取所选文件"
+                                : "Cannot read selected file",
+                            String(err)
+                        )
                     }
                 }
             }
@@ -171,12 +188,9 @@ export function setUtilsListeners(manager: WindowManager) {
         if (contents.getType() === "webview") {
             contents.on(
                 "did-fail-load",
-                (event, code, desc, validated, isMainFrame) => {
-                    if (isMainFrame && manager.hasWindow()) {
-                        manager.mainWindow.webContents.send(
-                            "webview-error",
-                            desc
-                        )
+                (_event, code, desc, _validated, isMainFrame) => {
+                    if (isMainFrame && code !== -3) {
+                        sendMain("webview-error", desc)
                     }
                 }
             )
@@ -192,6 +206,7 @@ export function setUtilsListeners(manager: WindowManager) {
                         ipcMain.handleOnce(
                             "image-callback",
                             (_, type: ImageCallbackTypes) => {
+                                if (contents.isDestroyed()) return
                                 switch (type) {
                                     case ImageCallbackTypes.OpenExternal:
                                     case ImageCallbackTypes.OpenExternalBg:
@@ -215,12 +230,9 @@ export function setUtilsListeners(manager: WindowManager) {
                                 }
                             }
                         )
-                        manager.mainWindow.webContents.send(
-                            "webview-context-menu",
-                            [params.x, params.y]
-                        )
+                        sendMain("webview-context-menu", [params.x, params.y])
                     } else {
-                        manager.mainWindow.webContents.send(
+                        sendMain(
                             "webview-context-menu",
                             [params.x, params.y],
                             params.selectionText,
@@ -232,7 +244,7 @@ export function setUtilsListeners(manager: WindowManager) {
                             `new Promise(resolve => {
                         const dismiss = () => {
                             document.removeEventListener("mousedown", dismiss)
-                            document.removeEventListener("scroll", dismiss)                            
+                            document.removeEventListener("scroll", dismiss)
                             resolve()
                         }
                         document.addEventListener("mousedown", dismiss)
@@ -240,11 +252,10 @@ export function setUtilsListeners(manager: WindowManager) {
                     })`
                         )
                         .then(() => {
-                            if (manager.hasWindow()) {
-                                manager.mainWindow.webContents.send(
-                                    "webview-context-menu"
-                                )
-                            }
+                            sendMain("webview-context-menu")
+                        })
+                        .catch(() => {
+                            // Guest navigated or closed before dismissal.
                         })
                 }
             })
@@ -274,7 +285,11 @@ export function setUtilsListeners(manager: WindowManager) {
                         return
                     }
                 }
-                if (manager.hasWindow() && manager.mainWindow === mainWindow) {
+                if (
+                    manager.hasWindow() &&
+                    manager.mainWindow === mainWindow &&
+                    !mainWindow.webContents.isDestroyed()
+                ) {
                     mainWindow.webContents.send("webview-keydown", input)
                 }
             })
@@ -299,7 +314,7 @@ export function setUtilsListeners(manager: WindowManager) {
 
     ipcMain.on("is-maximized", event => {
         event.returnValue =
-            Boolean(manager.mainWindow) && manager.mainWindow.isMaximized()
+            manager.hasWindow() && manager.mainWindow.isMaximized()
     })
 
     ipcMain.on("is-focused", event => {
@@ -329,7 +344,8 @@ export function setUtilsListeners(manager: WindowManager) {
             if (process.platform === "win32") {
                 manager.mainWindow.flashFrame(true)
                 manager.mainWindow.once("focus", () => {
-                    manager.mainWindow.flashFrame(false)
+                    if (manager.hasWindow())
+                        manager.mainWindow.flashFrame(false)
                 })
             } else if (process.platform === "darwin") {
                 app.dock.bounce()

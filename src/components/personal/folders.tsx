@@ -48,11 +48,15 @@ export function FolderPicker({
     onChange,
     suggestion = "",
     disabled = false,
+    compact = false,
+    trailingActions,
 }: {
     value?: number
     onChange: (id: number) => void
     suggestion?: string
     disabled?: boolean
+    compact?: boolean
+    trailingActions?: React.ReactNode
 }) {
     const { folders, error } = useFolders()
     const [search, setSearch] = useState("")
@@ -82,48 +86,90 @@ export function FolderPicker({
             setBusy(false)
         }
     }
+    const filteredOptions = folders
+        .filter(
+            f =>
+                f.id === value ||
+                folderLabel(f, folders)
+                    .toLocaleLowerCase()
+                    .includes(search.toLocaleLowerCase())
+        )
+        .map(f => ({ key: f.id, text: folderLabel(f, folders) }))
     return (
         <div style={{ display: "grid", gap: 8, minWidth: 200 }}>
-            <TextField
-                ariaLabel="查找文件夹"
-                placeholder="查找文件夹"
-                value={search}
-                onChange={(_, v) => setSearch(v)}
-                disabled={disabled}
-            />
-            <Dropdown
-                label="目标文件夹"
-                selectedKey={value ?? null}
-                disabled={disabled || busy}
-                placeholder="选择文件夹"
-                options={folders
-                    .filter(
-                        f =>
-                            f.id === value ||
-                            folderLabel(f, folders)
-                                .toLocaleLowerCase()
-                                .includes(search.toLocaleLowerCase())
-                    )
-                    .map(f => ({ key: f.id, text: folderLabel(f, folders) }))}
-                onChange={(_, o) => onChange(Number(o.key))}
-            />
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <DefaultButton
-                    disabled={disabled || busy}
-                    onClick={() => {
-                        setName(suggested)
-                        setCreating(!creating)
+            {(!compact || folders.length > 8) && (
+                <TextField
+                    ariaLabel="查找文件夹"
+                    placeholder="查找文件夹"
+                    value={search}
+                    onChange={(_, v) => setSearch(v)}
+                    disabled={disabled}
+                />
+            )}
+            {compact ? (
+                <div
+                    style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
                     }}>
-                    ＋新建文件夹
-                </DefaultButton>
-                {!!suggested && !creating && (
+                    <Dropdown
+                        ariaLabel="目标文件夹"
+                        selectedKey={value ?? null}
+                        disabled={disabled || busy}
+                        placeholder="选择归类文件夹…"
+                        styles={{ root: { minWidth: 200, flexGrow: 1 } }}
+                        options={filteredOptions}
+                        onChange={(_, o) => onChange(Number(o.key))}
+                    />
                     <DefaultButton
                         disabled={disabled || busy}
-                        onClick={() => void create(suggested)}>
-                        新建「{suggested}」
+                        onClick={() => {
+                            setName(suggested)
+                            setCreating(!creating)
+                        }}>
+                        ＋新建文件夹
                     </DefaultButton>
-                )}
-            </div>
+                    {!!suggested && !creating && (
+                        <DefaultButton
+                            disabled={disabled || busy}
+                            onClick={() => void create(suggested)}>
+                            新建「{suggested}」
+                        </DefaultButton>
+                    )}
+                    {trailingActions}
+                </div>
+            ) : (
+                <>
+                    <Dropdown
+                        label="目标文件夹"
+                        selectedKey={value ?? null}
+                        disabled={disabled || busy}
+                        placeholder="选择文件夹"
+                        options={filteredOptions}
+                        onChange={(_, o) => onChange(Number(o.key))}
+                    />
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <DefaultButton
+                            disabled={disabled || busy}
+                            onClick={() => {
+                                setName(suggested)
+                                setCreating(!creating)
+                            }}>
+                            ＋新建文件夹
+                        </DefaultButton>
+                        {!!suggested && !creating && (
+                            <DefaultButton
+                                disabled={disabled || busy}
+                                onClick={() => void create(suggested)}>
+                                新建「{suggested}」
+                            </DefaultButton>
+                        )}
+                        {trailingActions}
+                    </div>
+                </>
+            )}
             {creating && (
                 <>
                     <TextField
@@ -212,7 +258,7 @@ export function FolderManager() {
         try {
             await window.personal.archiveDeleteFolder(id, moveTo || null)
             choose(0)
-            setMessage("已移除文件夹，文章已保留")
+            setMessage("文件夹已删除，其中文章已保留")
             await dispatch(refreshArchive())
         } catch (e) {
             setMessage(String(e))
@@ -267,13 +313,16 @@ export function FolderManager() {
                 {removing && (
                     <>
                         <MessageBar>
-                            将移除这个文件夹及其子文件夹。文章会保留；没有其他归属的文章可在“未分类”找到。
+                            删除该文件夹（含子文件夹）不会删除文章；未归入其他文件夹的文章可在侧栏「未分类文章」中找到。
                         </MessageBar>
                         <Dropdown
-                            label="将文章归入"
+                            label="将其中文章转入"
                             selectedKey={moveTo}
                             options={[
-                                { key: 0, text: "保留现有其他分类" },
+                                {
+                                    key: 0,
+                                    text: "不转移（未归入其他文件夹的进入「未分类文章」）",
+                                },
                                 ...folders
                                     .filter(
                                         f => f.id !== id && f.parentId !== id
@@ -288,12 +337,22 @@ export function FolderManager() {
                         <PrimaryButton
                             disabled={busy}
                             onClick={() => void remove()}>
-                            移除文件夹并保留文章
+                            确认删除文件夹（保留文章）
                         </PrimaryButton>
                     </>
                 )}
                 {(message || error) && (
-                    <MessageBar>{message || error}</MessageBar>
+                    <MessageBar
+                        messageBarType={
+                            error ||
+                            (message &&
+                                !message.includes("已保存") &&
+                                !message.includes("已删除"))
+                                ? 1
+                                : 4
+                        }>
+                        {message || error}
+                    </MessageBar>
                 )}
             </div>
             <DialogFooter>

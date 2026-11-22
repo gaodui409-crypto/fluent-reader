@@ -5,6 +5,7 @@ import {
     PrimaryButton,
     TextField,
     MessageBar,
+    MessageBarType,
     Spinner,
     Pivot,
     PivotItem,
@@ -153,7 +154,7 @@ export function LinuxDoSubscriptions() {
                     {tab === "common" && (
                         <>
                             <p className={classes.hint}>
-                                推荐“最新主题”；“最新回复”会包含同一主题的不同楼层。榜单每小时最多保存一次有变化的排名，应用需保持运行。
+                                推荐订阅「最新主题」；「最新回复」会推送同一帖子的后续回帖。「每小时热门榜单」在软件运行期间每小时记录一次排名变化。
                             </p>
                             {choices(linuxDoPresets)}
                         </>
@@ -161,7 +162,7 @@ export function LinuxDoSubscriptions() {
                     {tab === "categories" && (
                         <>
                             <p className={classes.hint}>
-                                常用公开分类可直接订阅；读取网站目录可查看更多分类。限定访问分类请在“账号与等级帖”中检查。
+                                下方为常用公开分类，点击「读取网站分类」可拉取完整目录；需登录等级权限的分类请切到「账号与等级帖」查看。
                             </p>
                             <DefaultButton
                                 disabled={busy}
@@ -194,8 +195,8 @@ export function LinuxDoSubscriptions() {
                     {tab === "tags" && (
                         <>
                             <p className={classes.hint}>
-                                这是网站自身的标签订阅。搜索例如
-                                codex、grok；网站要求验证时，先打开登录窗口。
+                                按 Linux.do 站内标签订阅主题（如
+                                codex、grok）。若搜索时提示需要验证，请先切到「账号与等级帖」打开登录窗口。
                             </p>
                             <form
                                 className={classes.row}
@@ -243,12 +244,11 @@ export function LinuxDoSubscriptions() {
                     {tab === "account" && (
                         <>
                             <p className={classes.hint}>
-                                实验性账号主题订阅：只读取当前账号能访问的内容。先在网站窗口登录，再检查。账号等级高不保证公开
-                                RSS 包含等级帖。
-                            </p>
-                            <p className={classes.hint}>
-                                若 Cloudflare
-                                验证反复循环，说明此内嵌连接尚未通过网站验证。请使用系统浏览器阅读，账号订阅暂不可用；浏览器登录不会自动同步到本软件。
+                                实验功能：连接后可订阅当前账号权限内的限制分类主题（公开
+                                RSS 不含等级帖）。请先点击「打开 Linux.do
+                                登录窗口」完成登录与验证，再点击「检查账号可读内容」。若内置窗口反复卡在
+                                Cloudflare
+                                验证，说明当前网络环境受限，请改用系统浏览器阅读（外部浏览器的登录状态不会同步到本软件）。
                             </p>
                             <div className={classes.row}>
                                 <DefaultButton
@@ -298,7 +298,7 @@ export function LinuxDoSubscriptions() {
                                         {account.restrictedTopicCount} 篇。
                                     </p>
                                     <p className={classes.hint}>
-                                        账号订阅先保存主题标题与摘要，阅读主楼时点击“抓取全文”。此处的检查数量不代表全部历史内容。
+                                        账号订阅先保存主题标题与摘要，阅读主楼时点击「抓取全文」即可加载完整内容。此处的检查数量不代表全部历史帖子。
                                     </p>
                                     {choices([
                                         {
@@ -316,10 +316,10 @@ export function LinuxDoSubscriptions() {
                     {busy && <Spinner label="正在连接…" />}
                     {notice && <MessageBar>{notice}</MessageBar>}
                     {error && (
-                        <MessageBar>
+                        <MessageBar messageBarType={MessageBarType.error}>
                             {error}
                             <br />
-                            网站数据无法读取时，可打开“账号与等级帖”完成登录或验证后重试。
+                            若网站数据无法读取，可切到「账号与等级帖」完成登录或验证后重试。
                         </MessageBar>
                     )}
                 </>

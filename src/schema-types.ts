@@ -28,9 +28,9 @@ export const enum ViewType {
 }
 
 export const ARTICLE_OVERLAY_MIN_WIDTH = 860
-export const LIST_VIEW_MIN_WIDTH = 350
+export const LIST_VIEW_MIN_WIDTH = 300
 // Preserve the article space at the existing 992px minimum window width.
-export const LIST_ARTICLE_MIN_WIDTH = 992 - LIST_VIEW_MIN_WIDTH
+export const LIST_ARTICLE_MIN_WIDTH = 480
 
 export const enum ViewConfigs {
     ShowCover = 1 << 0,

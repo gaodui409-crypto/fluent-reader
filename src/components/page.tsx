@@ -24,7 +24,7 @@ const usePageClasses = makeStyles({
     feedMain: {
         "marginTop": "calc(-1 * var(--navHeight))",
         "marginLeft": 0,
-        "transition": "margin-left var(--transition-timing) 0.367s",
+        "transition": "margin-left var(--transition-timing) 0.32s",
         "height": "calc(100% - var(--selectionHeight, 0px))",
         "overflow": "hidden",
         "backgroundColor": "var(--neutralLighterAlt)",
@@ -37,12 +37,16 @@ const usePageClasses = makeStyles({
             width: "calc(100% - 16px)",
             height: "var(--navHeight)",
             marginBottom: "calc(-1 * var(--navHeight))",
-            background: "linear-gradient(var(--neutralLighterAlt), #faf9f800)",
+            background:
+                "linear-gradient(var(--neutralLighterAlt), transparent)",
+            pointerEvents: "none",
             zIndex: 1,
         },
     },
     feedMenuOpen: {
-        "@media (min-width: 1440px)": { marginLeft: "280px" },
+        "@media (min-width: 1280px)": {
+            marginLeft: "var(--sidebarWidth, 276px)",
+        },
     },
     articleContainer: {
         position: "fixed",
@@ -56,12 +60,11 @@ const usePageClasses = makeStyles({
         pointerEvents: "none",
         backgroundColor: "#0008",
         animationName: "fade",
-        animationDuration: "0.5s",
+        animationDuration: "0.35s",
         animationTimingFunction: "var(--transition-timing)",
         animationFillMode: "backwards",
     },
     feedBlurred: {
-        // Keep the article's guest surface outside the filtered background.
         filter: "var(--blur)",
     },
     articleWrapper: {
@@ -71,14 +74,14 @@ const usePageClasses = makeStyles({
         height: "calc(100% - 50px)",
         backgroundColor: "var(--white)",
         boxShadow:
-            "0 6.4px 14.4px 0 rgba(0, 0, 0, 0.132), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.108)",
-        borderRadius: "5px",
+            "0 8px 24px 0 rgba(0, 0, 0, 0.16), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.11)",
+        borderRadius: "8px",
         overflow: "hidden",
         animationName: {
-            from: { opacity: 0, transform: "translateY(20px)" },
+            from: { opacity: 0, transform: "translateY(16px)" },
             to: { opacity: 1, transform: "translateY(0)" },
         },
-        animationDuration: "0.5s",
+        animationDuration: "0.35s",
         animationTimingFunction: "var(--transition-timing)",
         animationFillMode: "backwards",
     },
@@ -101,7 +104,7 @@ const usePageClasses = makeStyles({
         position: "absolute",
         top: "calc(50% - 32px)",
         animationName: "fade",
-        animationDuration: "0.5s",
+        animationDuration: "0.35s",
         animationTimingFunction: "var(--transition-timing)",
         animationFillMode: "backwards",
     },
@@ -131,13 +134,16 @@ const Page: React.FC = () => {
     const articleOverlayOpen = useArticleOverlayOpen()
     const articleWidth = useArticleOverlayWidth()
 
-    const handleDismissItem = useCallback(() => dispatch(dismissItem()), [])
+    const handleDismissItem = useCallback(
+        () => dispatch(dismissItem()),
+        [dispatch]
+    )
     const handleOffsetItem = useCallback(
         (event: React.MouseEvent, offset: number) => {
             event.stopPropagation()
-            dispatch(showOffsetItem(offset))
+            void dispatch(showOffsetItem(offset))
         },
-        []
+        [dispatch]
     )
     const prevItem = useCallback(
         (event: React.MouseEvent) => handleOffsetItem(event, -1),
@@ -177,13 +183,9 @@ const Page: React.FC = () => {
             {articleOverlayOpen && (
                 <FocusTrapZone
                     disabled={contextOn}
-                    firstFocusableTarget={root => {
-                        const webview =
-                            root.querySelector<HTMLElement>("webview")
-                        return webview?.getClientRects().length
-                            ? webview
-                            : root.querySelector<HTMLElement>(".article")
-                    }}
+                    firstFocusableTarget={root =>
+                        root.querySelector<HTMLElement>(".article")
+                    }
                     ignoreExternalFocusing={true}
                     isClickableOutsideFocusTrap={true}
                     className={mergeClasses(
@@ -192,7 +194,6 @@ const Page: React.FC = () => {
                     )}
                     style={articleWidth.style}
                     onClick={handleDismissItem}>
-                    {/* Fade the scrim separately from the article's guest surface. */}
                     <div
                         aria-hidden="true"
                         className={pageClasses.articleScrim}
@@ -210,8 +211,8 @@ const Page: React.FC = () => {
                             key={side}
                             label={
                                 side === -1
-                                    ? "Resize article from left"
-                                    : "Resize article from right"
+                                    ? "调整阅读窗左侧宽度"
+                                    : "调整阅读窗右侧宽度"
                             }
                             multiplier={2 * side}
                             styleClass={mergeClasses(
@@ -232,7 +233,8 @@ const Page: React.FC = () => {
                                 )}>
                                 <FlatButton
                                     styleClass={pageClasses.articleBtn}
-                                    ariaLabel="Previous article"
+                                    title="上一篇（← / K）"
+                                    ariaLabel="上一篇文章"
                                     disabled={!hasPrevious}
                                     onClick={prevItem}>
                                     <Icon iconName="Back" />
@@ -245,7 +247,8 @@ const Page: React.FC = () => {
                                 )}>
                                 <FlatButton
                                     styleClass={pageClasses.articleBtn}
-                                    ariaLabel="Next article"
+                                    title="下一篇（→ / J）"
+                                    ariaLabel="下一篇文章"
                                     disabled={!hasNext}
                                     onClick={nextItem}>
                                     <Icon iconName="Forward" />

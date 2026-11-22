@@ -14,6 +14,7 @@ const rootFiles = new Set([
     "electron-builder-personal.yml",
     ".prettierrc.yml",
     ".prettierignore",
+    ".gitattributes",
     "LICENSE",
     "README.md",
     "README-personal.md",
@@ -22,6 +23,7 @@ const rootFiles = new Set([
 // Also works from the distributed source ZIP, which has no .git directory.
 const files = [
     ...rootFiles,
+    "tests/personal-unit.cjs",
     "dist/index.css",
     "dist/fonts.vbs",
     "dist/fontlist",
@@ -50,7 +52,7 @@ for (const file of new Set(files)) {
     if (
         !(
             rootFiles.has(file) ||
-            /^(src|docs|build)\//.test(file) ||
+            /^(src|docs|build|tests)\//.test(file) ||
             /^dist\/(article|drizzle|icons|styles)\//.test(file) ||
             /^dist\/(index\.css|fonts\.vbs|fontlist)$/.test(file)
         )

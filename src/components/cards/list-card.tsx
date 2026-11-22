@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useEffect, useState } from "react"
 import { Card } from "./card"
 import CardInfo from "./info"
 import Highlights from "./highlights"
@@ -7,10 +8,18 @@ import { ViewConfigs } from "../../schema-types"
 import { SourceTextDirection } from "../../scripts/models/source"
 import { forumPost } from "../../forum"
 import { isLinuxDo } from "../../linuxdo"
-import { useAppSelector } from "../../scripts/reducer"
+import { useAppDispatch, useAppSelector } from "../../scripts/reducer"
+import { selectArticle } from "../../scripts/models/organize"
 import { makeStyles, mergeClasses } from "@griffel/react"
 
 const useStyles = makeStyles({
+    batchSelected: {
+        backgroundColor: "var(--neutralLighter)",
+        boxShadow: "inset 3px 0 0 var(--primary)",
+    },
+    thumbImg: {
+        borderRadius: "4px",
+    },
     forum: {
         "& .data": { margin: "9px 12px", minWidth: 0 },
         "& .info": { marginBottom: "5px", gap: "3px" },
@@ -56,20 +65,65 @@ const className = (props: Card.Props) => {
 
 const ListCard: React.FunctionComponent<Card.Props> = props => {
     const classes = useStyles()
+    const dispatch = useAppDispatch()
+    const batchSelected = useAppSelector(s =>
+        s.organize.selected.includes(props.item._id)
+    )
     const single = useAppSelector(
         s => s.app.menuKey === "s-" + props.source.sid
     )
-    const forum = isLinuxDo(props.item.link),
-        post = forum ? forumPost(props.item.link) : null
+    const [thumbBroken, setThumbBroken] = useState(false)
+
+    useEffect(() => {
+        setThumbBroken(false)
+    }, [props.item.thumb])
+
+    const forum = isLinuxDo(props.item.link)
+    const post = forum ? forumPost(props.item.link) : null
+    const events = Card.bindEventsToProps(props)
+
     return (
         <div
-            className={mergeClasses(className(props), forum && classes.forum)}
-            {...Card.bindEventsToProps(props)}
+            className={mergeClasses(
+                className(props),
+                forum && classes.forum,
+                batchSelected && classes.batchSelected
+            )}
+            {...events}
+            onClick={event => {
+                if (event.ctrlKey || event.metaKey || event.shiftKey) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    dispatch(selectArticle(props.item._id, event.shiftKey))
+                } else {
+                    events.onClick(event)
+                }
+            }}
+            onKeyDown={event => {
+                if (event.target !== event.currentTarget) return
+                if (event.key === " ") {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    dispatch(selectArticle(props.item._id, event.shiftKey))
+                } else {
+                    events.onKeyDown(event)
+                }
+            }}
             data-iid={props.item._id}
+            data-selected={batchSelected}
             data-is-focusable>
-            {props.item.thumb && props.viewConfigs & ViewConfigs.ShowCover ? (
+            {props.item.thumb &&
+            !thumbBroken &&
+            props.viewConfigs & ViewConfigs.ShowCover ? (
                 <div className="head">
-                    <img src={props.item.thumb} />
+                    <img
+                        className={classes.thumbImg}
+                        src={props.item.thumb}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        onError={() => setThumbBroken(true)}
+                    />
                 </div>
             ) : null}
             <div className="data">

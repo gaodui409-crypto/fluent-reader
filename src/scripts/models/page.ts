@@ -90,10 +90,11 @@ export type PageActionTypes =
 
 export function selectAllArticles(init = false): AppThunk {
     return (dispatch, getState) => {
+        const existingFilter = getState().feeds[ALL]?.filter
         dispatch({
             type: SELECT_PAGE,
             keepMenu: getWindowBreakpoint(),
-            filter: getState().feeds[ALL]?.filter || new FeedFilter(),
+            filter: existingFilter ? { ...existingFilter } : new FeedFilter(),
             pageType: PageType.AllArticles,
             init:
                 init ||
@@ -111,11 +112,14 @@ export function selectSources(
 ): AppThunk {
     return (dispatch, getState) => {
         if (getState().app.menuKey !== menuKey) {
+            const existingFilter = getState().feeds[menuKey]?.filter
             dispatch({
                 type: SELECT_PAGE,
                 pageType: PageType.Sources,
                 keepMenu: getWindowBreakpoint(),
-                filter: getState().feeds[menuKey]?.filter || new FeedFilter(),
+                filter: existingFilter
+                    ? { ...existingFilter }
+                    : new FeedFilter(),
                 sids: sids,
                 menuKey: menuKey,
                 title: title,
@@ -162,19 +166,21 @@ export function selectCollection(
                 : collection === "later"
                 ? intl.get("personal.readLater")
                 : intl.get("personal.favorites"))
-        const filter: FeedFilter = getState().feeds[collection + ":" + tag]
-            ?.filter || {
-            ...new FeedFilter(
-                FilterType.Default |
-                    FilterType.CaseInsensitive |
-                    FilterType.KeywordSearch
-            ),
-            tag: collection === "tag" ? tag : undefined,
-            laterOnly: collection === "later",
-            library: true,
-            folderId: collection === "folder" ? Number(tag) : undefined,
-            unfiled: collection === "library",
-        }
+        const existingFilter = getState().feeds[collection + ":" + tag]?.filter
+        const filter: FeedFilter = existingFilter
+            ? { ...existingFilter }
+            : {
+                  ...new FeedFilter(
+                      FilterType.Default |
+                          FilterType.CaseInsensitive |
+                          FilterType.KeywordSearch
+                  ),
+                  tag: collection === "tag" ? tag : undefined,
+                  laterOnly: collection === "later",
+                  library: true,
+                  folderId: collection === "folder" ? Number(tag) : undefined,
+                  unfiled: collection === "library",
+              }
         if (collection === "starred") filter.type &= ~FilterType.ShowNotStarred
         dispatch({
             type: SELECT_PAGE,
@@ -194,17 +200,14 @@ export function selectCollection(
     }
 }
 
-export function showArchiveMatches(
-    ids: number[],
-    title = "筛选结果"
-): AppThunk {
+export function showArchiveMatches(ids: number[], title?: string): AppThunk {
     return async (dispatch, getState) => {
         dispatch({
             type: SELECT_PAGE,
             pageType: PageType.Sources,
             sids: Object.values(getState().sources).map(s => s.sid),
             menuKey: "archive-results",
-            title,
+            title: title || intl.get("organize.matchedArticles") || "筛选结果",
             keepMenu: getWindowBreakpoint(),
             filter: {
                 ...new FeedFilter(FilterType.Default),
@@ -231,6 +234,7 @@ export function showItem(feedId: string, item: RSSItem): AppThunk {
     return (dispatch, getState) => {
         const state = getState()
         if (
+            item &&
             state.items.hasOwnProperty(item._id) &&
             state.sources.hasOwnProperty(item.source)
         ) {
@@ -302,7 +306,7 @@ function getOffsetItemIndex(state: RootState, offset: number): number | null {
     const item = state.items[itemId]
     const prevs = feed.iids
         .map((id, index) => [state.items[id], index] as [RSSItem, number])
-        .filter(([i, _]) => i.date > item.date)
+        .filter(([i]) => i && i.date > item.date)
     if (prevs.length === 0) return offset - 1
     let prev = prevs[0]
     for (let j = 1; j < prevs.length; j += 1) {
@@ -327,6 +331,7 @@ export function showOffsetItem(offset: number): AppThunk<Promise<void>> {
         const index = getOffsetItemIndex(state, offset)
         if (index < feed.iids.length) {
             const item = state.items[feed.iids[index]]
+            if (!item) return
             dispatch(markRead(item))
             dispatch(showItem(feedId, item))
             return

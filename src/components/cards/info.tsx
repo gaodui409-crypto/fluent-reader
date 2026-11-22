@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Icon } from "@fluentui/react"
 import Time from "../utils/time"
 import { RSSSource } from "../../scripts/models/source"
 import { RSSItem } from "../../scripts/models/item"
@@ -14,6 +15,22 @@ type CardInfoProps = {
     postLabel?: string
 }
 
+const badgeStyle: React.CSSProperties = {
+    maxWidth: 108,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+    color: "var(--neutralSecondary)",
+    fontSize: 11,
+}
+
+const iconBadgeStyle: React.CSSProperties = {
+    fontSize: 11,
+    color: "var(--neutralSecondary)",
+    flexShrink: 0,
+}
+
 const CardInfo: React.FunctionComponent<CardInfoProps> = props => {
     const saved = useAppSelector(state =>
         state.library.saved.includes(props.item._id)
@@ -21,7 +38,7 @@ const CardInfo: React.FunctionComponent<CardInfoProps> = props => {
     return (
         <p className="info">
             {!props.hideSource && props.source.iconurl ? (
-                <img src={props.source.iconurl} />
+                <img src={props.source.iconurl} alt="" />
             ) : null}
             <span className="name">
                 {props.hideSource
@@ -40,15 +57,23 @@ const CardInfo: React.FunctionComponent<CardInfoProps> = props => {
                 <span className="starred-indicator"></span>
             ) : null}
             {!!props.item.tags?.length && (
-                <span title={props.item.tags.join(", ")}>
+                <span style={badgeStyle} title={props.item.tags.join(", ")}>
                     #{props.item.tags.join(" #")}
                 </span>
             )}
             {saved && (
-                <span title={intl.get("personal.savedOffline")}> ▣ </span>
+                <Icon
+                    iconName="OfflineStorage"
+                    style={iconBadgeStyle}
+                    title={intl.get("personal.savedOffline")}
+                />
             )}
             {props.item.readLater && (
-                <span title={intl.get("personal.readLater")}> ◷ </span>
+                <Icon
+                    iconName="Clock"
+                    style={iconBadgeStyle}
+                    title={intl.get("personal.readLater")}
+                />
             )}
             {props.item.hasRead ? null : (
                 <span className="read-indicator"></span>

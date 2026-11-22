@@ -21,7 +21,7 @@ import {
     mergeClasses,
 } from "@fluentui/react-components"
 import { useEffect, useMemo, useState } from "react"
-import { ThemeProvider } from "@fluentui/react"
+import { loadTheme, ThemeProvider } from "@fluentui/react"
 import { CUSTOM_STYLE_HOOKS, createAppTheme } from "./utils/theme"
 import { CustomStyleHooksProvider_unstable as CustomStyleHooksProvider } from "@fluentui/react-shared-contexts"
 import { getFontFamilyForLocale } from "../scripts/settings"
@@ -53,11 +53,11 @@ const useClasses = makeStyles({
 const Root: React.FC = () => {
     const dispatch = useAppDispatch()
     const locale = useAppSelector(s => s.app.locale)
-    const ready = useAppSelector(
-        s => s.app.sourceInit && !s.app.fetchingItems && !s.app.syncing
-    )
+    const sourceInit = useAppSelector(s => s.app.sourceInit)
     const articleOverlayOpen = useArticleOverlayOpen()
     const preferences = useAppSelector(s => s.preferences)
+    const sourceKeys = useAppSelector(s => Object.keys(s.sources).join(","))
+    const refreshCompletedAt = useAppSelector(s => s.app.refreshCompletedAt)
     useEffect(() => {
         const refresh = () => {
             void dispatch(refreshIfDue()).catch(console.error)
@@ -90,7 +90,7 @@ const Root: React.FC = () => {
         return window.personal.onChanged(load)
     }, [dispatch])
     useEffect(() => {
-        if (!ready) return
+        if (!sourceInit) return
         const expire = () => {
             void dispatch(expireUnread()).catch(error =>
                 window.utils.showErrorBox(
@@ -102,12 +102,12 @@ const Root: React.FC = () => {
         expire()
         const timer = setInterval(expire, 3600000)
         return () => clearInterval(timer)
-    }, [dispatch, ready, preferences])
+    }, [dispatch, sourceInit, preferences, sourceKeys, refreshCompletedAt])
     useEffect(() => {
         return window.personal.onOpenArticle(id => dispatch(showItemFromId(id)))
     }, [dispatch])
     useEffect(() => {
-        globalThis.settings.addThemeUpdateListener(shouldDark => {
+        return globalThis.settings.addThemeUpdateListener(shouldDark => {
             setIsDarkMode(shouldDark)
         })
     }, [])
@@ -115,15 +115,32 @@ const Root: React.FC = () => {
         () => createAppTheme(isDarkMode, getFontFamilyForLocale(locale)),
         [isDarkMode, locale]
     )
+    useEffect(() => {
+        // Sync global v8 theme and root CSS variables so portaled Dialogs/Modals/Callouts
+        // on document.body inherit both v8 and v9 dark/light foreground & surface tokens.
+        loadTheme(themeBundle.v8Theme)
+        const docEl = document.documentElement
+        const scheme = isDarkMode ? "dark" : "light"
+        docEl.dataset.theme = scheme
+        docEl.style.colorScheme = scheme
+        docEl.style.color = themeBundle.v9Theme.colorNeutralForeground1
+        for (const [tokenKey, tokenVal] of Object.entries(
+            themeBundle.v9Theme
+        )) {
+            if (typeof tokenVal === "string" || typeof tokenVal === "number") {
+                docEl.style.setProperty(`--${tokenKey}`, String(tokenVal))
+            }
+        }
+    }, [isDarkMode, themeBundle])
     return (
         locale && (
-            <ThemeProvider
-                theme={themeBundle.v8Theme}
-                applyTo="none"
-                style={{ height: "100%" }}>
-                <FluentProvider
-                    theme={themeBundle.v9Theme}
-                    className={classes.root}>
+            <FluentProvider
+                theme={themeBundle.v9Theme}
+                className={classes.root}>
+                <ThemeProvider
+                    theme={themeBundle.v8Theme}
+                    applyTo="none"
+                    style={{ height: "100%" }}>
                     <CustomStyleHooksProvider value={CUSTOM_STYLE_HOOKS}>
                         <div
                             id="root"
@@ -154,8 +171,8 @@ const Root: React.FC = () => {
                             <ContextMenu />
                         </div>
                     </CustomStyleHooksProvider>
-                </FluentProvider>
-            </ThemeProvider>
+                </ThemeProvider>
+            </FluentProvider>
         )
     )
 }

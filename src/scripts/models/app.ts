@@ -6,7 +6,6 @@ import {
     UPDATE_SOURCE,
     DELETE_SOURCE,
     initSources,
-    SourceOpenTarget,
     updateFavicon,
 } from "./source"
 import { RSSItem, ItemActionTypes, FETCH_ITEMS, fetchItems } from "./item"
@@ -30,7 +29,6 @@ import {
     SELECT_PAGE,
     PageType,
     selectAllArticles,
-    showItemFromId,
 } from "./page"
 import { getCurrentLocale } from "../settings"
 import locales from "../i18n/_locales"
@@ -297,7 +295,7 @@ export function exitSettings(): AppThunk<Promise<void>> {
                 dispatch(selectAllArticles(true))
                 await dispatch(initFeeds(true))
                 dispatch(toggleSettings(false))
-                freeMemory()
+                dispatch(freeMemory())
             } else {
                 dispatch(toggleSettings(false))
             }
@@ -307,9 +305,13 @@ export function exitSettings(): AppThunk<Promise<void>> {
 
 function freeMemory(): AppThunk {
     return (dispatch, getState) => {
+        const state = getState()
         const iids = new Set<number>()
-        for (let feed of Object.values(getState().feeds)) {
+        for (let feed of Object.values(state.feeds)) {
             if (feed.loaded) feed.iids.forEach(iids.add, iids)
+        }
+        if (state.page.itemId !== null) {
+            iids.add(state.page.itemId)
         }
         dispatch({
             type: FREE_MEMORY,
@@ -369,7 +371,9 @@ export interface RefreshStatusAction {
 
 export function pushNotification(item: RSSItem): AppThunk {
     return (dispatch, getState) => {
-        const sourceName = getState().sources[item.source].name
+        const sourceName =
+            getState().sources[item.source]?.name ||
+            intl.get("sources.untitled")
         void window.personal.notifyItem(item._id).catch(error => {
             window.utils.showErrorBox(
                 intl.get("personal.failed"),
@@ -426,9 +430,14 @@ export function initApp(): AppThunk<Promise<void>> {
                 err instanceof Error && err.cause
                     ? String(err.cause)
                     : String(err)
+            const zh = getCurrentLocale().startsWith("zh")
             await window.utils.showErrorBox(
-                "An error has occurred during update. Please report this error on GitHub.",
-                `${details}\n\nYour existing data has been preserved. Restart Fluent Reader to retry.`
+                zh
+                    ? "本地数据库初始化遇到问题"
+                    : "Database initialization failed",
+                zh
+                    ? `${details}\n\n原有本地数据均已保留，请重启应用重试。`
+                    : `${details}\n\nYour existing data has been preserved. Restart Fluent Reader to retry.`
             )
             window.utils.closeWindow()
             return
@@ -587,7 +596,9 @@ export function appReducer(
                                 new AppLog(
                                     AppLogType.Failure,
                                     intl.get("log.fetchFailure", {
-                                        name: action.errSource.name,
+                                        name:
+                                            action.errSource?.name ||
+                                            intl.get("sources.untitled"),
                                     }),
                                     String(action.err)
                                 ),

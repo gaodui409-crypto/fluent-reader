@@ -9,3 +9,4 @@ bin/*
 *.provisionprofile
 *.lock
 build/personal-source.zip
+.builder-cache/

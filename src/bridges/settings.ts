@@ -66,9 +66,13 @@ const settingsBridge = {
         return ipcRenderer.sendSync("get-theme-dark-color")
     },
     addThemeUpdateListener: (callback: (shouldDark: boolean) => any) => {
-        ipcRenderer.on("theme-updated", (_, shouldDark) => {
+        const listener = (_: unknown, shouldDark: boolean) => {
             callback(shouldDark)
-        })
+        }
+        ipcRenderer.on("theme-updated", listener)
+        return () => {
+            ipcRenderer.removeListener("theme-updated", listener)
+        }
     },
 
     setLocaleSettings: (option: string) => {

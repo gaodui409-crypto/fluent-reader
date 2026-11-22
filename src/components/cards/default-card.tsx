@@ -1,9 +1,11 @@
 import * as React from "react"
+import { useEffect, useState } from "react"
 import { Card } from "./card"
 import CardInfo from "./info"
 import Highlights from "./highlights"
 import { TranslatedTitle } from "../personal/ai"
 import { SourceTextDirection } from "../../scripts/models/source"
+import { ViewConfigs } from "../../schema-types"
 import intl from "react-intl-universal"
 import { Icon } from "@fluentui/react"
 import { makeStyles, mergeClasses } from "@griffel/react"
@@ -22,8 +24,21 @@ const useStyles = makeStyles({
         "height": "300px",
         "& .snippet": { maxHeight: "132px" },
         "&::after": { pointerEvents: "none" },
+        "&:hover .card-footer, &:focus-within .card-footer": {
+            opacity: 1,
+        },
     },
-    selected: { outline: "3px solid var(--primary)", outlineOffset: "2px" },
+    fadedRead: {
+        "& h3.title": {
+            color: "var(--neutralSecondary)",
+            fontWeight: 500,
+        },
+    },
+    selected: {
+        "outline": "3px solid var(--primary)",
+        "outlineOffset": "2px",
+        "& .card-footer": { opacity: 1 },
+    },
     noHover: {
         "&:hover p.snippet": { transform: "translateY(64px)" },
         "&:hover p.snippet.show": { transform: "none" },
@@ -38,6 +53,8 @@ const useStyles = makeStyles({
         backgroundColor: "var(--white)",
         borderTop: "1px solid var(--neutralQuaternaryAlt)",
         zIndex: 2,
+        opacity: 0.78,
+        transition: "opacity 0.14s ease",
     },
     choose: {
         width: "auto",
@@ -53,9 +70,9 @@ const useStyles = makeStyles({
     },
 })
 
-const className = (props: Card.Props, hover: boolean) => {
+const className = (props: Card.Props, hover: boolean, hasThumb: boolean) => {
     let cn = ["card", "default-card"]
-    if (props.item.snippet && props.item.thumb && hover) cn.push("transform")
+    if (props.item.snippet && hasThumb && hover) cn.push("transform")
     if (props.item.hidden) cn.push("hidden")
     if (props.source.textDir === SourceTextDirection.RTL) cn.push("rtl")
     return cn.join(" ")
@@ -68,12 +85,21 @@ const DefaultCard: React.FunctionComponent<Card.Props> = props => {
         s.organize.selected.includes(props.item._id)
     )
     const hover = useAppSelector(s => s.reading.hoverSummary)
+    const [thumbBroken, setThumbBroken] = useState(false)
+
+    useEffect(() => {
+        setThumbBroken(false)
+    }, [props.item.thumb])
+
+    const showThumb = Boolean(props.item.thumb && !thumbBroken)
     const events = Card.bindEventsToProps(props)
+
     const choose = (event: React.MouseEvent | React.KeyboardEvent) => {
         event.preventDefault()
         event.stopPropagation()
         dispatch(selectArticle(props.item._id, event.shiftKey))
     }
+
     const act = (fn: () => Promise<void>) => {
         void fn().catch(error =>
             window.utils.showErrorBox(
@@ -82,25 +108,26 @@ const DefaultCard: React.FunctionComponent<Card.Props> = props => {
             )
         )
     }
+
     return (
         <div
             className={mergeClasses(
-                className(props, hover),
+                className(props, hover, showThumb),
                 classes.root,
+                Boolean(
+                    props.viewConfigs & ViewConfigs.FadeRead &&
+                        props.item.hasRead
+                ) && classes.fadedRead,
                 !hover && classes.noHover,
                 selected && classes.selected
             )}
             {...events}
             onClick={event => {
-                const target = event.target as HTMLElement
-                if (
-                    event.ctrlKey ||
-                    event.metaKey ||
-                    event.shiftKey ||
-                    !target.closest(".head, .title")
-                )
+                if (event.ctrlKey || event.metaKey || event.shiftKey) {
                     choose(event)
-                else events.onClick(event)
+                } else {
+                    events.onClick(event)
+                }
             }}
             onKeyDown={event => {
                 if (event.target !== event.currentTarget) return
@@ -112,22 +139,36 @@ const DefaultCard: React.FunctionComponent<Card.Props> = props => {
             data-iid={props.item._id}
             data-selected={selected}
             data-is-focusable>
-            {props.item.thumb ? (
-                <img className="bg" src={props.item.thumb} />
+            {showThumb ? (
+                <img
+                    className="bg"
+                    src={props.item.thumb}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    onError={() => setThumbBroken(true)}
+                />
             ) : null}
             <div className="bg"></div>
-            {props.item.thumb ? (
-                <img className="head" src={props.item.thumb} />
+            {showThumb ? (
+                <img
+                    className="head"
+                    src={props.item.thumb}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    onError={() => setThumbBroken(true)}
+                />
             ) : null}
             <CardInfo source={props.source} item={props.item} />
             <h3 className="title">
                 <TranslatedTitle item={props.item} filter={props.filter} />
             </h3>
-            <p className={"snippet" + (props.item.thumb ? "" : " show")}>
+            <p className={"snippet" + (showThumb ? "" : " show")}>
                 <Highlights text={props.item.snippet} filter={props.filter} />
             </p>
             <div
-                className={classes.footer}
+                className={mergeClasses("card-footer", classes.footer)}
                 onClick={e => e.stopPropagation()}
                 onMouseUp={e => e.stopPropagation()}
                 onKeyDown={e => e.stopPropagation()}>

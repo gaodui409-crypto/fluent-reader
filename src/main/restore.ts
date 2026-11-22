@@ -48,20 +48,39 @@ export function applyPendingRestore(root: string) {
     const pending = path.join(root, "pending-restore")
     const marker = path.join(pending, "manifest.json")
     if (!fs.existsSync(marker)) return
-    const manifest = JSON.parse(fs.readFileSync(marker, "utf8"))
-    const offline = validateOfflineEntries(manifest.offline)
-    const names = ["config.json", "fluent-reader.db"]
-    for (const name of names) {
-        const bytes = fs.readFileSync(path.join(pending, name))
-        if (sha256(bytes) !== manifest.hashes[name])
-            throw new Error("Restore file verification failed: " + name)
+    const started = path.join(pending, "started")
+    const retirePending = () => {
+        try {
+            if (fs.existsSync(marker)) fs.unlinkSync(marker)
+            fs.rmSync(pending, { recursive: true, force: true })
+        } catch {
+            // Non-fatal if OS still releases directory handles.
+        }
     }
-    for (const file of offline) {
-        if (
-            sha256(fs.readFileSync(path.join(pending, file.entry))) !==
-            manifest.hashes[file.entry]
-        )
-            throw new Error("Offline restore verification failed.")
+    let manifest: {
+        hashes: Record<string, string>
+        offline?: unknown
+    }
+    let offline: OfflineBackupEntry[]
+    const names = ["config.json", "fluent-reader.db"]
+    try {
+        manifest = JSON.parse(fs.readFileSync(marker, "utf8"))
+        offline = validateOfflineEntries(manifest.offline)
+        for (const name of names) {
+            const bytes = fs.readFileSync(path.join(pending, name))
+            if (sha256(bytes) !== manifest.hashes?.[name])
+                throw new Error("Restore file verification failed: " + name)
+        }
+        for (const file of offline) {
+            if (
+                sha256(fs.readFileSync(path.join(pending, file.entry))) !==
+                manifest.hashes?.[file.entry]
+            )
+                throw new Error("Offline restore verification failed.")
+        }
+    } catch (verifyErr) {
+        if (!fs.existsSync(started)) retirePending()
+        throw verifyErr
     }
     const rollback = path.join(root, "before-restore")
     const rollbackNames = [
@@ -70,7 +89,6 @@ export function applyPendingRestore(root: string) {
         "fluent-reader.db-shm",
     ]
     fs.mkdirSync(rollback, { recursive: true })
-    const started = path.join(pending, "started")
     if (!fs.existsSync(started)) {
         for (const name of rollbackNames) {
             const dest = path.join(root, name)
@@ -118,8 +136,14 @@ export function applyPendingRestore(root: string) {
                 db.close()
             }
         }
-        fs.unlinkSync(marker)
+        retirePending()
     } catch (error) {
+        try {
+            if (fs.existsSync(offlineRoot))
+                fs.rmSync(offlineRoot, { recursive: true, force: true })
+        } catch {
+            // Ignore partial cleanup failure during rollback.
+        }
         // Roll back the database together with its WAL, including writes that
         // were durable before restart but not yet checkpointed into the DB file.
         for (const name of rollbackNames) {
@@ -129,6 +153,9 @@ export function applyPendingRestore(root: string) {
             else if (fs.existsSync(path.join(root, name)))
                 fs.unlinkSync(path.join(root, name))
         }
+        // Retire the failed staged restore after rollback succeeds so subsequent
+        // app launches never overwrite new user data with a stale before-restore.
+        retirePending()
         throw error
     }
 }

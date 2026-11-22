@@ -34,7 +34,6 @@ const useStyles = makeStyles({
         margin: "8px 12px",
     },
     floating: {
-        // Input's runtime reset styles must not override the toolbar geometry.
         "&.fui-SearchBox": {
             position: "absolute",
             minHeight: 0,
@@ -55,17 +54,17 @@ const useStyles = makeStyles({
         },
     },
     floatingMenu: {
-        "@media (min-width: 1440px)": {
-            left: "280px",
+        "@media (min-width: 1280px)": {
+            left: "var(--sidebarWidth, 276px)",
             maxWidth: "calc(100% - 728px)",
         },
     },
     floatingDarwinMenu: {
-        "@media (min-width: 1440px)": {
-            "left": "280px",
+        "@media (min-width: 1280px)": {
+            "left": "var(--sidebarWidth, 276px)",
             "maxWidth": "calc(100% - 556px)",
             "&:is(body.not-fullscreen *)": {
-                left: "280px",
+                left: "var(--sidebarWidth, 276px)",
                 maxWidth: "calc(100% - 556px)",
             },
         },
@@ -90,12 +89,13 @@ export default function ArticleSearch({
     const input = useRef<HTMLInputElement>(null)
     const [availableWidth, setAvailableWidth] = useState<number>()
     const isDarwin = window.utils.platform === "darwin"
+
     useLayoutEffect(() => {
         if (inline || !searchOn) return
         const box = document.querySelector<HTMLElement>(".article-search")
         const actions = document.getElementById("mark-all-toggle")
             ?.previousElementSibling as HTMLElement
-        if (!box || !actions) return
+        if (!box || !actions || !actions.parentElement) return
         const measure = () =>
             setAvailableWidth(
                 Math.max(
@@ -114,19 +114,19 @@ export default function ArticleSearch({
             window.removeEventListener("resize", measure)
         }
     }, [inline, searchOn, menuOn])
+
     const search = useMemo(() => {
         const scheduler = new Async()
         return {
             run: scheduler.debounce((value: string) => {
                 if (keywordMode || validateRegex(value) !== null)
                     dispatch(performSearch(value))
-            }, 750),
+            }, 500),
             dispose: () => scheduler.dispose(),
         }
     }, [dispatch, keywordMode])
 
     useEffect(() => search.dispose, [search])
-    // Changing search mode must also apply text that has not reached the debounce yet.
     useEffect(() => {
         search.run(query)
     }, [search])
@@ -274,7 +274,7 @@ export default function ArticleSearch({
             dismiss={
                 query
                     ? {
-                          "aria-label": "Clear text",
+                          "aria-label": intl.get("cancel"),
                           "tabIndex": 0,
                           "onKeyDown": event => {
                               if (event.key === "Enter" || event.key === " ") {

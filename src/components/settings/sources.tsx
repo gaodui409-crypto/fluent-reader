@@ -358,7 +358,7 @@ class SourcesTab extends React.Component<SourcesTabProps, SourcesTabState> {
                                                 this.state.selectedSource.url
                                             )
                                         }
-                                        text={intl.get("context.copy")}
+                                        text={intl.get("context.copyURL")}
                                     />
                                 </Stack.Item>
                             </>

@@ -1,5 +1,5 @@
 import { getRulesForTarget } from "./rule"
-import { eq, and, lt, lte, gte, inArray } from "drizzle-orm"
+import { eq, and, lte, gte, inArray } from "drizzle-orm"
 import { database, itemsTable, itemsInSources } from "../db"
 import { getValidDate } from "../date"
 import { findCoverImage, resolveHTTPURL } from "../cover"
@@ -14,7 +14,6 @@ import {
     INIT_FEED,
     LOAD_MORE,
     dismissItems,
-    initFeeds,
     RSSFeed,
 } from "./feed"
 import {
@@ -24,6 +23,7 @@ import {
     FREE_MEMORY,
     REFRESH_STATUS,
 } from "./app"
+import { initFeeds } from "./feed"
 import {
     getServiceHooks,
     syncWithService,
@@ -127,6 +127,7 @@ export const MARK_UNREAD = "MARK_UNREAD"
 export const TOGGLE_STARRED = "TOGGLE_STARRED"
 export const TOGGLE_HIDDEN = "TOGGLE_HIDDEN"
 export const UPDATE_ITEM_META = "UPDATE_ITEM_META"
+export const BATCH_UPDATE_ITEMS = "BATCH_UPDATE_ITEMS"
 
 interface FetchItemsAction {
     type: typeof FETCH_ITEMS
@@ -148,6 +149,7 @@ interface MarkAllReadAction {
     sids: number[]
     time?: number
     before?: boolean
+    itemIds?: number[]
 }
 
 interface MarkUnreadAction {
@@ -165,8 +167,15 @@ interface ToggleHiddenAction {
     item: RSSItem
 }
 
+interface BatchUpdateItemsAction {
+    type: typeof BATCH_UPDATE_ITEMS
+    itemIds: number[]
+    changes: Partial<RSSItem>
+}
+
 export type ItemActionTypes =
     | { type: typeof UPDATE_ITEM_META; item: RSSItem }
+    | BatchUpdateItemsAction
     | FetchItemsAction
     | MarkReadAction
     | MarkAllReadAction
@@ -440,12 +449,39 @@ export function markAllRead(
     return async (dispatch, getState) => {
         let state = getState()
         if (sids === null) {
-            let feed = state.feeds[state.page.feedId]
+            const feed = state.feeds[state.page.feedId]
+            if (!feed) return
             const rows = await RSSFeed.loadFeed(feed, 0, -1)
-            for (const item of rows) {
-                if (!date || (before ? item.date <= date : item.date >= date))
-                    await dispatch(markRead(item, true))
+            const targets = rows.filter(
+                item =>
+                    !item.hasRead &&
+                    (!date || (before ? item.date <= date : item.date >= date))
+            )
+            if (targets.length === 0) return
+            const targetIds = targets.map(i => i._id)
+            for (let offset = 0; offset < targetIds.length; offset += 400) {
+                await database
+                    .update(itemsTable)
+                    .set({ hasRead: true })
+                    .where(
+                        inArray(
+                            itemsTable._id,
+                            targetIds.slice(offset, offset + 400)
+                        )
+                    )
             }
+            const hooks = dispatch(getServiceHooks())
+            for (const item of targets) {
+                if (item.serviceRef && hooks.markRead) {
+                    dispatch(hooks.markRead(item))
+                }
+            }
+            dispatch({
+                type: MARK_ALL_READ,
+                sids: [],
+                itemIds: targetIds,
+            })
+            await dispatch(updateUnreadCounts())
             return
         }
         if (sids.length === 0) return
@@ -535,18 +571,26 @@ export function toggleHidden(item: RSSItem): AppThunk<Promise<void>> {
 
 export function itemShortcuts(item: RSSItem, e: KeyboardEvent): AppThunk {
     return dispatch => {
-        if (e.metaKey) return
+        if (e.altKey) return
+        if (e.key === "b" || e.key === "B") {
+            if ((e.ctrlKey || e.metaKey) && !platformCtrl(e)) return
+            if (!item.hasRead) dispatch(markRead(item))
+            void window.personal.opened?.(item._id).catch(console.error)
+            window.utils.openExternal(item.link, platformCtrl(e))
+            return
+        }
+        if (e.metaKey || e.ctrlKey) return
         switch (e.key) {
             case "m":
             case "M":
                 if (item.hasRead) dispatch(markUnread(item))
                 else dispatch(markRead(item))
                 break
-            case "b":
-            case "B":
+            case "o":
+            case "O":
                 if (!item.hasRead) dispatch(markRead(item))
                 void window.personal.opened?.(item._id).catch(console.error)
-                window.utils.openExternal(item.link, platformCtrl(e))
+                window.utils.openExternal(item.link, false)
                 break
             case "s":
             case "S":
@@ -609,6 +653,18 @@ export function itemReducer(
                     ...action.item,
                 },
             }
+        case BATCH_UPDATE_ITEMS: {
+            const idSet = new Set(action.itemIds)
+            let mutated = false
+            const nextState: ItemState = { ...state }
+            for (const id of idSet) {
+                if (nextState[id]) {
+                    nextState[id] = { ...nextState[id], ...action.changes }
+                    mutated = true
+                }
+            }
+            return mutated ? nextState : state
+        }
         case FETCH_ITEMS:
             switch (action.status) {
                 case ActionStatus.Success: {
@@ -635,6 +691,14 @@ export function itemReducer(
         }
         case MARK_ALL_READ: {
             let nextState = { ...state }
+            if (action.itemIds) {
+                for (const id of action.itemIds) {
+                    if (nextState[id] && !nextState[id].hasRead) {
+                        nextState[id] = { ...nextState[id], hasRead: true }
+                    }
+                }
+                return nextState
+            }
             let sids = new Set(action.sids)
             for (let item of Object.values(state)) {
                 if (sids.has(item.source) && !item.hasRead) {

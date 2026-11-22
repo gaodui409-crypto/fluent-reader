@@ -19,6 +19,7 @@
     "confirm": "Confirm",
     "cancel": "Cancel",
     "default": "Default",
+    "copyError": "Copy error",
     "time": {
         "now": "now",
         "m": "m",
@@ -311,6 +312,7 @@
         "fullText": "Fetch full text",
         "refetch": "Fetch full text again",
         "sourceSettings": "Source and group settings",
+        "groupSettings": "Group reading preferences",
         "bulkHint": "Only options changed here are applied. Choose Inherit to reset an override.",
         "inheritHint": "Sources inherit their group settings. Individual overrides take precedence.",
         "inherit": "Inherit defaults",
@@ -378,7 +380,10 @@
         "shortcutsHelp": "F1 menu; F2 list search; Ctrl+Shift+F full-text search; F5 refresh; F6 organize articles; F7 messages; F8 view; F9 settings. Selected article: R read later; S star; M read/unread; B external browser; H hide; L webpage; W full text; left/right arrows previous/next; Esc close article or settings.",
         "discovery": "Feed discovery",
         "health": "Subscription health",
-        "aiTask": "AI request"
+        "aiTask": "AI request",
+        "subscription": "Feed refresh",
+        "linuxdo": "Linux.do data",
+        "linuxdo-ranking": "Linux.do ranking"
     },
     "discovery": {
         "placeholder": "Paste a website or RSS/Atom address",
@@ -451,6 +456,7 @@
         "settingsSections": "Personal settings categories",
         "selection": "Article selection",
         "manage": "Organize articles",
+        "matchedArticles": "Matched articles",
         "selectedCount": "{count} selected",
         "clearSelection": "Clear selection",
         "scope": "Scope",

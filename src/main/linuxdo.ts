@@ -31,7 +31,7 @@ export class LinuxDo {
             return Promise.resolve(this.browser)
         const win = secureWebWindow(false)
         this.browser = win
-        win.setTitle("LINUX DO · 账号连接")
+        win.setTitle("LINUX DO · 账号登录")
         win.on("closed", () => {
             if (this.browser === win) this.browser = null
             this.cache.clear()
@@ -42,6 +42,8 @@ export class LinuxDo {
             }, 25000)
             try {
                 await win.loadURL(LINUXDO)
+                if (win.isDestroyed())
+                    throw new Error("Linux.do 登录窗口在加载完成前已关闭。")
                 return win
             } finally {
                 clearTimeout(timeout)
@@ -55,10 +57,12 @@ export class LinuxDo {
         this.needsVerification = false
         this.cache.clear()
         const pending = this.window()
-        this.browser?.show()
+        if (this.browser && !this.browser.isDestroyed()) this.browser.show()
         const win = await pending
-        win.show()
-        win.focus()
+        if (!win.isDestroyed()) {
+            win.show()
+            win.focus()
+        }
         return true
     }
 
@@ -67,10 +71,16 @@ export class LinuxDo {
         this.cache.clear()
     }
 
+    private ensureAlive(win: BrowserWindow) {
+        if (!win || win.isDestroyed() || win.webContents?.isDestroyed?.()) {
+            throw new Error("Linux.do 连接窗口已关闭，请重试。")
+        }
+    }
+
     private async json(path: string): Promise<any> {
         if (this.needsVerification)
             throw new Error(
-                "Linux.do 网站验证尚未通过，已暂停账号数据请求。请打开登录窗口完成验证，再点击检查。普通浏览器的登录不会自动同步到应用。"
+                "Linux.do 需要人机验证或重新登录，已暂停自动请求。请先打开登录窗口完成验证，再点击检查连接。"
             )
         const address = new URL(path, LINUXDO)
         if (
@@ -89,12 +99,24 @@ export class LinuxDo {
                 const response = await this.request(address.href)
                 return JSON.parse(response.text)
             } catch (e) {
-                if (e instanceof RequestError && ![401, 403].includes(e.status))
-                    throw e
+                const shouldTryBrowser =
+                    (e instanceof RequestError &&
+                        [401, 403].includes(e.status)) ||
+                    e instanceof SyntaxError
+                if (!shouldTryBrowser) throw e
             }
             const win = await this.window()
-            if (new URL(win.webContents.getURL()).origin !== LINUXDO)
-                throw new Error("请先在网站窗口完成登录，再检查连接。")
+            this.ensureAlive(win)
+            let currentOrigin = ""
+            try {
+                currentOrigin = new URL(win.webContents.getURL()).origin
+            } catch {
+                currentOrigin = ""
+            }
+            if (currentOrigin !== LINUXDO)
+                throw new Error(
+                    "请先在打开的网站窗口完成登录，再点击检查连接。"
+                )
             const challenge = await win.webContents.executeJavaScript(
                 `!!document.querySelector('iframe[src*="challenges.cloudflare.com"], #challenge-running, #challenge-form') || /^(请稍候|Just a moment|Checking your browser)/i.test(document.title)`,
                 false
@@ -102,9 +124,10 @@ export class LinuxDo {
             if (challenge) {
                 this.needsVerification = true
                 throw new Error(
-                    "内嵌窗口停留在 Cloudflare 验证页，已暂停账号数据请求。若点击验证后反复返回此页，请使用系统浏览器阅读；等级订阅暂不可用。"
+                    "内嵌窗口停留在 Cloudflare 安全验证页，已暂停自动请求。请打开登录窗口完成验证；若反复被拦，可改用系统浏览器阅读。"
                 )
             }
+            this.ensureAlive(win)
             const result = await win.webContents.executeJavaScript(
                 `(async()=>{
                 if(location.origin !== 'https://linux.do')throw Error('Please finish login first');
@@ -126,7 +149,7 @@ export class LinuxDo {
             } catch {
                 this.needsVerification = true
                 throw new Error(
-                    "网站尚未返回数据。请打开 Linux.do 登录窗口，完成登录或网站验证后重试。"
+                    "网站尚未返回有效数据，请打开 Linux.do 登录窗口完成登录或安全验证后重试。"
                 )
             }
         })
@@ -134,7 +157,7 @@ export class LinuxDo {
 
     async catalog(kind: "categories" | "tags", query = "") {
         if (!["categories", "tags"].includes(kind))
-            throw new Error("无效的目录。")
+            throw new Error("无效的目录类型。")
         const term = String(query).trim().toLocaleLowerCase().slice(0, 100)
         const key = kind + ":" + term,
             cached = this.cache.get(key)
@@ -185,7 +208,7 @@ export class LinuxDo {
         const categories = categoryChoices(await this.json("/site.json"))
         const latest = await this.json("/latest.json")
         if (!Array.isArray(latest?.topic_list?.topics))
-            throw new Error("已登录，但网站没有返回账号主题列表。")
+            throw new Error("已登录，但未能获取到最新话题列表。")
         const restricted = new Set(
             categories
                 .filter(c => c.restricted)
@@ -209,7 +232,7 @@ export class LinuxDo {
         const account = await this.json("/session/current.json")
         if (!account?.current_user?.username)
             throw new Error(
-                "账号主题订阅需要登录。请在 Linux.do 连接窗口重新登录。"
+                "此 Linux.do 订阅需要登录状态，请在账号连接窗口重新登录。"
             )
         const data = await this.json(path)
         return topicRSS(data, LINUXDO + path, "LINUX DO · 账号主题")

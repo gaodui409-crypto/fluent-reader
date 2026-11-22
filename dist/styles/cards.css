@@ -1,7 +1,10 @@
 .info {
     display: flex;
+    align-items: center;
+    gap: 4px;
     position: relative;
     margin: 10px 12px;
+    font-size: 12px;
     line-height: 16px;
 }
 .info img {
@@ -28,6 +31,8 @@
 }
 .info span.time {
     font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .read-indicator,
@@ -68,6 +73,7 @@
 .card:focus {
     outline: none;
 }
+.card:focus-visible::after,
 .ms-Fabric--isFocusVisible .card:focus::after {
     content: "";
     position: absolute;
@@ -247,9 +253,10 @@
 }
 
 .magazine-card {
-    width: 700px;
+    width: min(700px, calc(100% - 32px));
+    box-sizing: border-box;
     padding: 24px;
-    max-height: 160px;
+    max-height: 208px;
     display: flex;
     transition: box-shadow linear 0.08s, background-color linear 0.08s,
         transform linear 0.08s;
@@ -356,6 +363,10 @@
 .compact-card .data .title {
     font-weight: 600;
     margin-right: 6px;
+}
+.compact-card.read .data .title {
+    color: var(--neutralSecondary);
+    font-weight: 400;
 }
 .compact-card .data .snippet {
     color: var(--neutralSecondaryAlt);

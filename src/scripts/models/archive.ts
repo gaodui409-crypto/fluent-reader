@@ -55,7 +55,7 @@ export function refreshArchive(
         await dispatch(updateUnreadCounts())
         await dispatch(initFeeds(true))
         return syncFailures
-            ? `；本地已保存，${syncFailures} 项服务同步失败，请稍后重试同步。`
+            ? `（本地已生效，有 ${syncFailures} 篇未能同步至云端服务，稍后刷新会自动重试）`
             : ""
     }
 }

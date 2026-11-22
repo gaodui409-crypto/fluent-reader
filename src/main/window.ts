@@ -1,4 +1,4 @@
-import { BrowserWindow, nativeTheme, app } from "electron"
+import { BrowserWindow, nativeTheme, app, screen } from "electron"
 import * as path from "node:path"
 import { setThemeListener } from "./settings"
 import { setUtilsListeners } from "./utils"
@@ -22,20 +22,39 @@ export class WindowManager {
         setUtilsListeners(this)
 
         app.on("second-instance", () => {
-            if (this.mainWindow !== null) {
+            if (this.hasWindow()) {
+                if (this.mainWindow.isMinimized()) this.mainWindow.restore()
+                this.mainWindow.show()
                 this.mainWindow.focus()
             }
         })
 
         app.on("activate", () => {
-            if (this.mainWindow === null) {
+            if (!this.hasWindow()) {
                 this.createWindow()
             }
         })
     }
 
+    private sendToRenderer = (channel: string, ...args: unknown[]) => {
+        if (this.hasWindow() && !this.mainWindow.webContents.isDestroyed()) {
+            this.mainWindow.webContents.send(channel, ...args)
+        }
+    }
+
     createWindow = () => {
         if (!this.hasWindow()) {
+            const workArea = screen.getPrimaryDisplay().workAreaSize
+            const minWidth = Math.min(992, workArea.width)
+            const minHeight = Math.min(600, workArea.height)
+            const defaultWidth = Math.min(
+                workArea.width,
+                Math.max(minWidth, Math.min(1360, workArea.width - 40))
+            )
+            const defaultHeight = Math.min(
+                workArea.height,
+                Math.max(minHeight, Math.min(840, workArea.height - 40))
+            )
             this.mainWindow = new BrowserWindow({
                 name: "main",
                 windowStatePersistence: true,
@@ -48,10 +67,10 @@ export class WindowManager {
                         ? "#282828"
                         : "#faf9f8",
                 vibrancy: "sidebar",
-                width: 1200,
-                height: 700,
-                minWidth: 992,
-                minHeight: 600,
+                width: defaultWidth,
+                height: defaultHeight,
+                minWidth,
+                minHeight,
                 frame: process.platform === "darwin",
                 titleBarStyle: "hiddenInset",
                 fullscreenable: process.platform === "darwin",
@@ -62,10 +81,7 @@ export class WindowManager {
                     nodeIntegration: false,
                     sandbox: true,
                     spellcheck: false,
-                    preload: path.join(
-                        app.getAppPath(),
-                        (app.isPackaged ? "dist/" : "") + "preload.js"
-                    ),
+                    preload: path.join(__dirname, "preload.js"),
                 },
             })
             if (process.platform === "win32" && app.isPackaged) {
@@ -102,35 +118,34 @@ export class WindowManager {
                 }
             )
             this.mainWindow.on("ready-to-show", () => {
+                if (!this.hasWindow()) return
                 this.mainWindow.show()
                 this.mainWindow.focus()
                 if (!app.isPackaged) this.mainWindow.webContents.openDevTools()
             })
-            this.mainWindow.loadFile(
-                (app.isPackaged ? "dist/" : "") + "index.html"
-            )
+            this.mainWindow.loadFile(path.join(__dirname, "index.html"))
 
             this.mainWindow.on("maximize", () => {
-                this.mainWindow.webContents.send("maximized")
+                this.sendToRenderer("maximized")
             })
             this.mainWindow.on("unmaximize", () => {
-                this.mainWindow.webContents.send("unmaximized")
+                this.sendToRenderer("unmaximized")
             })
             this.mainWindow.on("enter-full-screen", () => {
-                this.mainWindow.webContents.send("enter-fullscreen")
+                this.sendToRenderer("enter-fullscreen")
             })
             this.mainWindow.on("leave-full-screen", () => {
-                this.mainWindow.webContents.send("leave-fullscreen")
+                this.sendToRenderer("leave-fullscreen")
             })
             this.mainWindow.on("focus", () => {
-                this.mainWindow.webContents.send("window-focus")
+                this.sendToRenderer("window-focus")
             })
             this.mainWindow.on("blur", () => {
-                this.mainWindow.webContents.send("window-blur")
+                this.sendToRenderer("window-blur")
             })
             this.mainWindow.webContents.on("context-menu", (_, params) => {
                 if (params.selectionText) {
-                    this.mainWindow.webContents.send(
+                    this.sendToRenderer(
                         "window-context-menu",
                         [params.x, params.y],
                         params.selectionText

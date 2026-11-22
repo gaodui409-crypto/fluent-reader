@@ -27,19 +27,23 @@ const escapeXML = (s: string) =>
 export class Backups {
     running = false
     error = ""
+    warning = ""
+    private nextScheduledRetry = 0
     constructor(
         private sqlite: Database.Database,
         private store: Store<SchemaTypes>,
-        private settings: () => PersonalSettings
+        private settings: () => PersonalSettings,
+        private changed: () => void = () => {}
     ) {}
 
     async create(): Promise<string> {
-        if (this.running) throw new Error("A backup is already running.")
+        if (this.running) throw new Error("正在执行备份，请稍候。")
         const options = this.settings()
-        if (!options.backupFolder)
-            throw new Error("Choose a backup folder first.")
+        if (!options.backupFolder) throw new Error("请先选择备份保存文件夹。")
         this.running = true
         this.error = ""
+        this.warning = ""
+        this.changed()
         let temporary = ""
         try {
             // Encrypt legacy service credentials before taking the settings snapshot.
@@ -93,14 +97,14 @@ export class Backups {
                 "fluent-reader.db": sha256(dbBytes),
                 "config.json": sha256(settings),
             }
+            let missingOfflineCount = 0
             for (const row of saved) {
                 let bytes: Buffer
                 try {
                     bytes = await fs.readFile(row.offlinePath)
                 } catch {
-                    throw new Error(
-                        `Cannot back up the saved page: ${row.offlinePath}`
-                    )
+                    missingOfflineCount++
+                    continue
                 }
                 const entry = `offline/${row.itemId}.html`
                 const date = new Date(row.date)
@@ -115,6 +119,9 @@ export class Backups {
                 offline.push({ itemId: row.itemId, entry, relative })
                 zip.addFile(entry, bytes)
                 hashes[entry] = sha256(bytes)
+            }
+            if (missingOfflineCount > 0) {
+                this.warning = `有 ${missingOfflineCount} 篇本地网页文件在磁盘上未找到，数据库与其余内容已正常完成备份。`
             }
             zip.addFile(
                 "manifest.json",
@@ -138,6 +145,7 @@ export class Backups {
                 ...this.settings(),
                 lastBackup: Date.now(),
             })
+            this.nextScheduledRetry = 0
             const previous = (await fs.readdir(options.backupFolder))
                 .filter(name =>
                     /^FluentReader-\d{4}-\d{2}-\d{2}T[\dTZ-]+\.zip$/.test(name)
@@ -145,13 +153,16 @@ export class Backups {
                 .sort()
                 .reverse()
             for (const name of previous.slice(Math.max(1, options.backupKeep)))
-                await fs.unlink(path.join(options.backupFolder, name))
+                await fs
+                    .unlink(path.join(options.backupFolder, name))
+                    .catch(() => {})
             return output
         } catch (error) {
             this.error = String(error)
             throw error
         } finally {
             this.running = false
+            this.changed()
             if (temporary)
                 await fs
                     .rm(temporary, { recursive: true, force: true })
@@ -174,14 +185,14 @@ export class Backups {
         ]) {
             const entry = zip.getEntry(name)
             if (!entry || entry.header.size > 2 * 1024 * 1024 * 1024)
-                throw new Error("Invalid backup: " + name)
+                throw new Error("备份压缩包缺少核心文件或体积异常：" + name)
         }
         const manifest = JSON.parse(zip.readAsText("manifest.json"))
         if (
             manifest.format !== "fluent-personal" ||
             ![1, 2].includes(manifest.version)
         )
-            throw new Error("Unsupported backup format.")
+            throw new Error("不支持该备份压缩包的版本格式。")
         const offline = validateOfflineEntries(manifest.offline)
         const configBytes = zip.readFile("config.json")
         const dbBytes = zip.readFile("fluent-reader.db")
@@ -189,61 +200,80 @@ export class Backups {
             sha256(configBytes) !== manifest.hashes["config.json"] ||
             sha256(dbBytes) !== manifest.hashes["fluent-reader.db"]
         )
-            throw new Error("Backup checksum mismatch.")
+            throw new Error(
+                "备份包文件校验未通过（checksum mismatch），文件可能已损坏，已取消恢复以保护现有数据。"
+            )
         const config = JSON.parse(configBytes.toString("utf8"))
         if (!config || typeof config !== "object" || Array.isArray(config))
-            throw new Error("Invalid settings.")
+            throw new Error("备份中的配置文件无效。")
         const pending = path.join(
             path.dirname(this.store.path),
             "pending-restore"
         )
+        await fs.rm(pending, { recursive: true, force: true }).catch(() => {})
         await fs.mkdir(pending, { recursive: true })
-        const candidate = path.join(pending, "fluent-reader.db")
-        // A manifest is the commit marker. Never leave one pointing at partial staging.
-        await fs.rm(path.join(pending, "manifest.json"), { force: true })
-        for (const file of offline) {
-            const entry = zip.getEntry(file.entry)
-            if (!entry || entry.header.size > 200 * 1024 * 1024)
-                throw new Error("Invalid offline page in backup.")
-            const bytes = zip.readFile(entry)
-            if (sha256(bytes) !== manifest.hashes[file.entry])
-                throw new Error("Offline page checksum mismatch.")
-            const destination = path.join(pending, file.entry)
-            await fs.mkdir(path.dirname(destination), { recursive: true })
-            await fs.writeFile(destination, bytes)
-        }
-        await fs.writeFile(candidate, dbBytes)
-        const check = new SQLite(candidate, { readonly: true })
         try {
-            if (check.pragma("integrity_check", { simple: true }) !== "ok")
-                throw new Error("Backup database integrity check failed.")
-            check.prepare("SELECT _id,title,content FROM items LIMIT 1").get()
-            check.prepare("SELECT sid,url FROM sources LIMIT 1").get()
-        } finally {
-            check.close()
+            const candidate = path.join(pending, "fluent-reader.db")
+            for (const file of offline) {
+                const entry = zip.getEntry(file.entry)
+                if (!entry || entry.header.size > 200 * 1024 * 1024)
+                    throw new Error("备份包中的离线网页文件缺失或异常。")
+                const bytes = zip.readFile(entry)
+                if (sha256(bytes) !== manifest.hashes[file.entry])
+                    throw new Error(
+                        "备份包内的离线网页校验未通过（checksum mismatch），已取消恢复以保护现有数据。"
+                    )
+                const destination = path.join(pending, file.entry)
+                await fs.mkdir(path.dirname(destination), { recursive: true })
+                await fs.writeFile(destination, bytes)
+            }
+            await fs.writeFile(candidate, dbBytes)
+            const check = new SQLite(candidate, { readonly: true })
+            try {
+                if (check.pragma("integrity_check", { simple: true }) !== "ok")
+                    throw new Error("备份数据库完整性自检未通过。")
+                check
+                    .prepare("SELECT _id,title,content FROM items LIMIT 1")
+                    .get()
+                check.prepare("SELECT sid,url FROM sources LIMIT 1").get()
+            } finally {
+                check.close()
+            }
+            const answer = await dialog.showMessageBox({
+                type: "warning",
+                message: zh
+                    ? "恢复备份并重启应用？"
+                    : "Restore backup and restart?",
+                detail: zh
+                    ? "当前数据库和设置将替换为所选备份。替换前的旧数据会自动保留在数据目录的 before-restore 文件夹中。"
+                    : "The backup will replace your database and settings. The previous files are kept in before-restore.",
+                buttons: zh
+                    ? ["取消", "恢复并重启"]
+                    : ["Cancel", "Restore and restart"],
+                defaultId: 0,
+                cancelId: 0,
+            })
+            if (answer.response !== 1) {
+                await fs
+                    .rm(pending, { recursive: true, force: true })
+                    .catch(() => {})
+                return false
+            }
+            await fs.writeFile(path.join(pending, "config.json"), configBytes)
+            await fs.rm(path.join(pending, "started"), { force: true })
+            await fs.writeFile(
+                path.join(pending, "manifest.json"),
+                JSON.stringify(manifest)
+            )
+            app.relaunch()
+            app.exit(0)
+            return true
+        } catch (err) {
+            await fs
+                .rm(pending, { recursive: true, force: true })
+                .catch(() => {})
+            throw err
         }
-        const answer = await dialog.showMessageBox({
-            type: "warning",
-            message: zh ? "恢复备份并重启？" : "Restore backup and restart?",
-            detail: zh
-                ? "当前数据库和设置将替换为备份。替换前的数据会保留在 before-restore 文件夹。"
-                : "The backup will replace your database and settings. The previous files are kept in before-restore.",
-            buttons: zh
-                ? ["取消", "恢复并重启"]
-                : ["Cancel", "Restore and restart"],
-            defaultId: 0,
-            cancelId: 0,
-        })
-        if (answer.response !== 1) return false
-        await fs.writeFile(path.join(pending, "config.json"), configBytes)
-        await fs.rm(path.join(pending, "started"), { force: true })
-        await fs.writeFile(
-            path.join(pending, "manifest.json"),
-            JSON.stringify(manifest)
-        )
-        app.relaunch()
-        app.exit(0)
-        return true
     }
 
     async scheduled() {
@@ -254,9 +284,16 @@ export class Backups {
             !this.running &&
             settings.backupFolder &&
             settings.backupSchedule !== "off" &&
+            Date.now() >= this.nextScheduledRetry &&
             Date.now() - settings.lastBackup >= interval
         ) {
-            await this.create().catch(() => {})
+            try {
+                await this.create()
+            } catch (error) {
+                this.error = String(error)
+                this.nextScheduledRetry = Date.now() + 30 * 60 * 1000
+                this.changed()
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-import { app, Menu, nativeTheme } from "electron"
+import { app, Menu, nativeTheme, session } from "electron"
 import { ThemeSettings } from "./schema-types"
 import { store } from "./main/settings"
 import performUpdate from "./main/update-scripts"
@@ -46,7 +46,8 @@ if (process.platform === "darwin") {
                     label: "Quit",
                     accelerator: "Command+Q",
                     click: () => {
-                        if (winManager.hasWindow) winManager.mainWindow.close()
+                        if (winManager.hasWindow())
+                            winManager.mainWindow.close()
                     },
                 },
             ],
@@ -89,7 +90,8 @@ if (process.platform === "darwin") {
                     label: "Close",
                     accelerator: "Command+W",
                     click: () => {
-                        if (winManager.hasWindow) winManager.mainWindow.close()
+                        if (winManager.hasWindow())
+                            winManager.mainWindow.close()
                     },
                 },
                 {
@@ -113,20 +115,22 @@ const winManager = new WindowManager()
 
 initDB(store, winManager, () => {
     restarting = true
-    winManager.mainWindow.close()
+    if (winManager.hasWindow()) winManager.mainWindow.close()
 })
 
 app.on("window-all-closed", () => {
-    if (winManager.hasWindow()) {
-        winManager.mainWindow.webContents.session.clearStorageData({
-            storages: ["cookies", "localstorage"],
-        })
-    }
     winManager.mainWindow = null
     if (restarting) {
         restarting = false
         winManager.createWindow()
     } else {
-        app.quit()
+        void session.defaultSession
+            .clearStorageData({
+                storages: ["cookies", "localstorage"],
+            })
+            .catch(() => {})
+            .finally(() => {
+                app.quit()
+            })
     }
 })

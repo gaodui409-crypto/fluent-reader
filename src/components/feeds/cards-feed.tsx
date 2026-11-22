@@ -63,6 +63,7 @@ const CardsFeed: React.FC<FeedProps> = props => {
                 item={item}
                 source={props.sourceMap[item.source]}
                 filter={props.filter}
+                viewConfigs={props.viewConfigs}
                 shortcuts={props.shortcuts}
                 markRead={props.markRead}
                 contextMenu={props.contextMenu}

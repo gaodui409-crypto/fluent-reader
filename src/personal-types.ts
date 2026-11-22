@@ -58,11 +58,20 @@ export interface QueueTask {
     error?: string
 }
 
+export interface QueueSummary {
+    waiting: number
+    running: number
+    failed: number
+}
+
 export interface PersonalStatus {
     index: IndexProgress
     tasks: QueueTask[]
+    queueSummary?: QueueSummary
     backupRunning: boolean
     backupError: string
+    backupWarning?: string
+    aiError?: string
     offline: OfflineTask[]
 }
 
@@ -119,6 +128,11 @@ export interface AIResult {
     text: string
     tokens: number | null
     cached: boolean
+    original?: string
+}
+export interface AIArticleState {
+    summary?: string
+    translation?: string
     original?: string
 }
 export interface BriefingTopic {

@@ -305,27 +305,38 @@ export function updateUnreadCounts(): AppThunk<Promise<void>> {
 export function initSources(): AppThunk<Promise<void>> {
     return async dispatch => {
         dispatch(initSourcesRequest())
-        await init()
-        await dispatch(loadPreferences())
-        const sourcesData = await database.select().from(sourcesTable)
-        dispatch(initRules())
-        const state: SourceState = {}
-        for (const source of sourcesData) {
-            const rssSource = source as unknown as RSSSource
-            rssSource.unreadCount = 0
-            state[source.sid] = rssSource
-        }
-        await unreadCount(state)
-        dispatch(
-            fixBrokenGroups(
-                Object.fromEntries(
-                    Object.entries(state).filter(
-                        ([, source]) => !source.archived
+        try {
+            await init()
+            await dispatch(loadPreferences()).catch(err =>
+                console.warn("Failed to load source preferences:", err)
+            )
+            const sourcesData = await database.select().from(sourcesTable)
+            try {
+                dispatch(initRules())
+            } catch (err) {
+                console.warn("Failed to load stored rules:", err)
+            }
+            const state: SourceState = {}
+            for (const source of sourcesData) {
+                const rssSource = source as unknown as RSSSource
+                rssSource.unreadCount = 0
+                state[source.sid] = rssSource
+            }
+            await unreadCount(state)
+            dispatch(
+                fixBrokenGroups(
+                    Object.fromEntries(
+                        Object.entries(state).filter(
+                            ([, source]) => !source.archived
+                        )
                     )
                 )
             )
-        )
-        dispatch(initSourcesSuccess(state))
+            dispatch(initSourcesSuccess(state))
+        } catch (err) {
+            dispatch(initSourcesFailure(err))
+            throw err
+        }
     }
 }
 
@@ -465,13 +476,13 @@ export function addSource(
                     window.utils.showErrorBox(
                         intl.get("sources.errorAdd"),
                         String(e),
-                        intl.get("context.copy")
+                        intl.get("copyError")
                     )
                 }
                 throw e
             }
         }
-        throw new Error("Sources not initialized.")
+        throw new Error("订阅源尚未初始化完成。")
     }
 }
 
@@ -520,7 +531,8 @@ export function deleteSource(
     batch = false
 ): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
-        if (!batch) dispatch(saveSettings())
+        const inSettings = getState().app.settings.display
+        if (!batch && inSettings) dispatch(saveSettings())
         try {
             await dispatch(
                 updateRulesForTarget({ type: "source", sid: source.sid }, [])
@@ -538,27 +550,33 @@ export function deleteSource(
                 })
             window.settings.saveGroups(getState().groups)
         } catch (err) {
-            console.log(err)
+            console.error(err)
+            window.utils.showErrorBox(intl.get("personal.failed"), String(err))
         } finally {
-            if (!batch) dispatch(saveSettings())
+            if (!batch && inSettings) dispatch(saveSettings())
         }
     }
 }
 
 export function deleteSources(sources: RSSSource[]): AppThunk<Promise<void>> {
-    return async dispatch => {
-        dispatch(saveSettings())
-        for (let source of sources) {
-            await dispatch(deleteSource(source, true))
+    return async (dispatch, getState) => {
+        const inSettings = getState().app.settings.display
+        if (inSettings) dispatch(saveSettings())
+        try {
+            for (let source of sources) {
+                await dispatch(deleteSource(source, true))
+            }
+        } finally {
+            if (inSettings) dispatch(saveSettings())
         }
-        dispatch(saveSettings())
     }
 }
 
 export function toggleSourceHidden(source: RSSSource): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
-        const sourceCopy: RSSSource = { ...getState().sources[source.sid] }
-        sourceCopy.hidden = !sourceCopy.hidden
+        const current = getState().sources[source.sid]
+        if (!current) return
+        const sourceCopy: RSSSource = { ...current, hidden: !current.hidden }
         dispatch({
             type: sourceCopy.hidden ? HIDE_SOURCE : UNHIDE_SOURCE,
             status: ActionStatus.Success,
@@ -590,8 +608,7 @@ export function updateFavicon(
                 source.url === url &&
                 (force || source.iconurl === undefined)
             ) {
-                source.iconurl = favicon
-                await dispatch(updateSource(source))
+                await dispatch(updateSource({ ...source, iconurl: favicon }))
             }
         })
         await Promise.all(promises)
@@ -628,8 +645,8 @@ export function sourceReducer(
                 [action.source.sid]: action.source,
             }
         case DELETE_SOURCE: {
-            delete state[action.source.sid]
-            return { ...state }
+            const { [action.source.sid]: _removed, ...rest } = state
+            return rest
         }
         case FETCH_ITEMS: {
             switch (action.status) {
@@ -665,23 +682,29 @@ export function sourceReducer(
             }
         }
         case MARK_UNREAD:
-        case MARK_READ:
+        case MARK_READ: {
+            const target = state[action.item.source]
+            if (!target) return state
+            const delta =
+                action.item.hidden || action.item.feedHidden
+                    ? 0
+                    : action.type === MARK_UNREAD
+                    ? 1
+                    : -1
+            if (delta === 0) return state
             return {
                 ...state,
                 [action.item.source]: {
-                    ...state[action.item.source],
-                    unreadCount:
-                        state[action.item.source].unreadCount +
-                        (action.item.hidden || action.item.feedHidden
-                            ? 0
-                            : action.type === MARK_UNREAD
-                            ? 1
-                            : -1),
+                    ...target,
+                    unreadCount: Math.max(0, target.unreadCount + delta),
                 } as RSSSource,
             }
+        }
         case MARK_ALL_READ: {
+            if (action.itemIds) return state
             let nextState = { ...state }
             action.sids.forEach(sid => {
+                if (!state[sid]) return
                 nextState[sid] = {
                     ...state[sid],
                     unreadCount: action.time ? state[sid].unreadCount : 0,

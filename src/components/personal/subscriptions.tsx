@@ -6,6 +6,7 @@ import {
     PrimaryButton,
     TextField,
     MessageBar,
+    MessageBarType,
     Spinner,
     Separator,
     Link,
@@ -91,7 +92,7 @@ export function FeedDiscovery({
             </form>
             {busy && <Spinner label={intl.get("discovery.working")} />}
             {error && (
-                <MessageBar>
+                <MessageBar messageBarType={MessageBarType.error}>
                     {intl.get("personal.failed")} {error}
                 </MessageBar>
             )}
@@ -166,7 +167,7 @@ export function SourceHealthPanel() {
                     </DefaultButton>
                     {busy && <Spinner label={intl.get("health.checking")} />}
                     {error && (
-                        <MessageBar>
+                        <MessageBar messageBarType={MessageBarType.error}>
                             {intl.get("personal.failed")} {error}
                         </MessageBar>
                     )}
@@ -223,7 +224,8 @@ export function SourceHealthPanel() {
                                 })}
                             </p>
                             {row.failures > 0 && (
-                                <MessageBar>
+                                <MessageBar
+                                    messageBarType={MessageBarType.warning}>
                                     {intl.get("health.failures", {
                                         n: row.failures,
                                     })}{" "}

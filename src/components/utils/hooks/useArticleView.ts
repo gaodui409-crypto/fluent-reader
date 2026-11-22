@@ -11,17 +11,19 @@ import { SourceOpenTarget } from "../../../scripts/models/source"
 function initialView(
     itemId: number,
     openTarget: SourceOpenTarget,
-    requestedTarget = openTarget
+    requestedTarget = openTarget,
+    localReady = false
 ) {
+    const mode =
+        openTarget === SourceOpenTarget.External
+            ? SourceOpenTarget.Local
+            : openTarget
     return {
         itemId,
         openTarget: requestedTarget,
-        mode:
-            openTarget === SourceOpenTarget.External
-                ? SourceOpenTarget.Local
-                : openTarget,
+        mode,
         fullContent: "",
-        loaded: false,
+        loaded: mode === SourceOpenTarget.Local && localReady,
         error: "",
         reloadCount: 0,
     }
@@ -39,6 +41,7 @@ export function useArticleView(
     collection?: string
 ) {
     const itemId = item._id
+    const localReadyRef = useRef(false)
     const [view, setView] = useState(() => initialView(itemId, openTarget))
     const articleRef = useRef<HTMLElement>(null)
     const webview = useRef<Electron.WebviewTag>(null)
@@ -46,12 +49,20 @@ export function useArticleView(
 
     // Reset before committing a new article so it never mounts the previous mode
     // or displays full content fetched for the previous article.
-    if (view.itemId !== itemId || view.openTarget !== openTarget)
-        setView(initialView(itemId, openTarget))
+    if (view.itemId !== itemId || view.openTarget !== openTarget) {
+        setView(
+            initialView(itemId, openTarget, openTarget, localReadyRef.current)
+        )
+    }
 
     const loadWebpage = view.mode === SourceOpenTarget.Webpage
     const loadFull = view.mode === SourceOpenTarget.FullContent
-    const showWebview = !loadFull || !!view.fullContent
+    const showWebview = true
+    const webviewKey = loadWebpage ? `web_${itemId}` : "local_reader"
+
+    useLayoutEffect(() => {
+        if (loadWebpage) localReadyRef.current = false
+    }, [loadWebpage])
 
     useLayoutEffect(() => {
         // Keep the close handler's target current even during a synchronous unmount.
@@ -71,12 +82,33 @@ export function useArticleView(
             return
         }
 
-        const onLoaded = () => setView(view => ({ ...view, loaded: true }))
+        const onLoaded = () => {
+            if (!loadFull) setView(v => ({ ...v, loaded: true }))
+        }
+        const onFailLoad = (event: Electron.DidFailLoadEvent) => {
+            if (event.isMainFrame && event.errorCode !== -3) {
+                setView(v => ({
+                    ...v,
+                    loaded: true,
+                    error: event.errorDescription,
+                }))
+            }
+        }
         node.addEventListener("did-stop-loading", onLoaded)
-        setView(view => ({ ...view, loaded: false, error: "" }))
-        // Focus only a newly mounted guest. Read/star and toolbar updates must
-        // leave the user's current focus and scroll position alone.
-        node.focus()
+        node.addEventListener("did-fail-load", onFailLoad)
+        setView(v => ({
+            ...v,
+            loaded:
+                v.mode === SourceOpenTarget.Local && localReadyRef.current
+                    ? true
+                    : v.mode === SourceOpenTarget.FullContent
+                    ? Boolean(v.fullContent)
+                    : false,
+            error: "",
+        }))
+        // Focus the reader container when opening an article/mode so keyboard
+        // shortcuts (Space, J/K, Escape, N, W, L) work immediately.
+        articleRef.current?.focus({ preventScroll: true })
         const card = articleCard(itemId)
         // Chromium supports this without scrolling an already visible card.
         // @ts-ignore
@@ -84,13 +116,17 @@ export function useArticleView(
 
         return () => {
             node.removeEventListener("did-stop-loading", onLoaded)
+            node.removeEventListener("did-fail-load", onFailLoad)
         }
-    }, [itemId, view.mode, showWebview])
+    }, [itemId, view.mode, showWebview, loadFull])
 
-    useEffect(() => {
-        return window.utils.addWebviewErrorListener(reason => {
-            setView(view => ({ ...view, error: reason }))
-        })
+    const markLocalReady = useCallback(() => {
+        localReadyRef.current = true
+        setView(v =>
+            v.mode === SourceOpenTarget.Local && !v.loaded
+                ? { ...v, loaded: true }
+                : v
+        )
     }, [])
 
     useEffect(() => {
@@ -107,11 +143,11 @@ export function useArticleView(
                 )
                 const html = result.html
                 if (!controller.signal.aborted)
-                    setView(view => ({ ...view, fullContent: html }))
+                    setView(v => ({ ...v, fullContent: html, loaded: true }))
             } catch (error) {
                 if (!controller.signal.aborted)
-                    setView(view => ({
-                        ...view,
+                    setView(v => ({
+                        ...v,
                         loaded: true,
                         error: String(error),
                     }))
@@ -125,19 +161,25 @@ export function useArticleView(
 
     const toggleMode = useCallback(
         (mode: SourceOpenTarget) => {
-            setView(view => {
-                if (view.mode === mode)
+            setView(v => {
+                if (v.mode === mode)
                     return initialView(
                         itemId,
                         SourceOpenTarget.Local,
-                        openTarget
+                        openTarget,
+                        localReadyRef.current
                     )
                 if (
                     item.link.startsWith("https://") ||
                     item.link.startsWith("http://")
                 )
-                    return initialView(itemId, mode, openTarget)
-                return view
+                    return initialView(
+                        itemId,
+                        mode,
+                        openTarget,
+                        localReadyRef.current
+                    )
+                return v
             })
         },
         [itemId, item.link, openTarget]
@@ -153,15 +195,16 @@ export function useArticleView(
     )
     const reload = () => {
         if (loadFull) {
-            setView(view => ({
-                ...view,
+            setView(v => ({
+                ...v,
                 fullContent: "",
                 loaded: false,
                 error: "",
-                reloadCount: view.reloadCount + 1,
+                reloadCount: v.reloadCount + 1,
             }))
         } else if (webview.current) {
-            setView(view => ({ ...view, loaded: false, error: "" }))
+            if (!loadWebpage) localReadyRef.current = false
+            setView(v => ({ ...v, loaded: false, error: "" }))
             webview.current.reload()
         }
     }
@@ -169,13 +212,14 @@ export function useArticleView(
     return {
         articleRef,
         webview,
-        webviewKey: `${itemId}_${view.mode}`,
+        webviewKey,
         showWebview,
         loadWebpage,
         loadFull,
         fullContent: view.fullContent,
         loaded: view.loaded,
         error: view.error,
+        markLocalReady,
         toggleWebpage,
         toggleFull,
         reload,

@@ -182,7 +182,9 @@ export const urlTest = (s: string) =>
         s
     )
 
-export const getWindowBreakpoint = () => window.innerWidth >= 1440
+export const DOCKED_MENU_BREAKPOINT = 1280
+export const getWindowBreakpoint = () =>
+    window.innerWidth >= DOCKED_MENU_BREAKPOINT
 
 export const cutText = (s: string, length: number) => {
     return s.length <= length ? s : s.slice(0, length) + "…"

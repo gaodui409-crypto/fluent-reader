@@ -15,6 +15,7 @@ import {
     RSSItem,
     TOGGLE_HIDDEN,
     UPDATE_ITEM_META,
+    BATCH_UPDATE_ITEMS,
     applyItemReduction,
 } from "./item"
 import { ActionStatus, AppThunk, mergeSortedArrays } from "../utils"
@@ -79,6 +80,7 @@ export class FeedFilter {
     }
 
     static testItem(filter: FeedFilter, item: RSSItem) {
+        if (!item) return false
         let type = filter.type
         let flag = true
         if (filter.tag) flag = flag && (item.tags || []).includes(filter.tag)
@@ -160,7 +162,7 @@ export class RSSFeed {
         const conditions = [itemsInSources(feed.sids)]
         if (filter.folderId !== undefined)
             conditions.push(
-                sql`${itemsTable._id} IN (SELECT min(fi._id) FROM items fi JOIN folder_articles fa ON fa.itemId=fi._id JOIN article_folders f ON f.id=fa.folderId LEFT JOIN article_notes n ON n.itemId=fi._id WHERE f.deleted=0 AND (f.id=${filter.folderId} OR f.parentId=${filter.folderId}) GROUP BY CASE WHEN coalesce(n.text,'')<>'' THEN 'note:'||fi._id ELSE coalesce(forum_key(fi.link),'item:'||fi._id) END)`
+                sql`${itemsTable._id} IN (SELECT min(fi._id) FROM items fi JOIN folder_articles fa ON fa.itemId=fi._id JOIN article_folders f ON f.id=fa.folderId LEFT JOIN article_notes n ON n.itemId=fi._id WHERE f.deleted=0 AND (f.id=${filter.folderId} OR f.parentId=${filter.folderId}) GROUP BY CASE WHEN coalesce(n.text,'')<>'' THEN 'note:'||fi._id ELSE coalesce(CASE WHEN fi.link LIKE '%linux.do/t/%' THEN forum_key(fi.link) ELSE NULL END,'item:'||fi._id) END)`
             )
         if (filter.unfiled)
             conditions.push(
@@ -176,7 +178,7 @@ export class RSSFeed {
             )
         if (filter.tag)
             conditions.push(
-                sql`EXISTS (SELECT 1 FROM json_each(${itemsTable.tags}) WHERE value=${filter.tag})`
+                sql`${itemsTable.tags} <> '[]' AND EXISTS (SELECT 1 FROM json_each(${itemsTable.tags}) WHERE value=${filter.tag})`
             )
         if (filter.laterOnly) conditions.push(eq(itemsTable.readLater, true))
         if (!(type & FilterType.ShowRead))
@@ -273,11 +275,13 @@ export function dismissItems(): AppThunk {
     return (dispatch, getState) => {
         const state = getState()
         let fid = state.page.feedId
-        let filter = state.feeds[fid].filter
+        const currentFeed = state.feeds[fid]
+        if (!currentFeed) return
+        let filter = currentFeed.filter
         let iids = new Set<number>()
-        for (let iid of state.feeds[fid].iids) {
+        for (let iid of currentFeed.iids) {
             let item = state.items[iid]
-            if (!FeedFilter.testItem(filter, item)) {
+            if (!item || !FeedFilter.testItem(filter, item)) {
                 iids.add(iid)
             }
         }
@@ -345,7 +349,7 @@ export function initFeeds(force = false): AppThunk<Promise<void>> {
                         if (isCurrent()) dispatch(initFeedSuccess(feed, items))
                     })
                     .catch(err => {
-                        console.log(err)
+                        console.error(err)
                         if (isCurrent()) dispatch(initFeedFailure(err))
                     })
                 promises.push(p)
@@ -388,7 +392,7 @@ export function loadMoreFailure(feed: RSSFeed, err): FeedActionTypes {
 
 export function loadMore(feed: RSSFeed): AppThunk<Promise<void>> {
     return (dispatch, getState) => {
-        if (feed.loaded && !feed.loading && !feed.allLoaded) {
+        if (feed && feed.loaded && !feed.loading && !feed.allLoaded) {
             const version = beginRequest(feed._id)
             const isCurrent = () =>
                 requestVersions.get(feed._id) === version &&
@@ -407,14 +411,12 @@ export function loadMore(feed: RSSFeed): AppThunk<Promise<void>> {
                         )
                 })
                 .catch(e => {
-                    console.log(e)
+                    console.error(e)
                     if (isCurrent())
                         dispatch(loadMoreFailure(getState().feeds[feed._id], e))
                 })
         }
-        return new Promise((_, reject) => {
-            reject()
-        })
+        return Promise.resolve()
     }
 }
 
@@ -471,15 +473,18 @@ export function feedReducer(
             }
             return nextState
         }
-        case APPLY_FILTER:
+        case APPLY_FILTER: {
+            const targetFeed = state[action.feedId]
+            if (!targetFeed) return state
             return {
                 ...state,
                 [action.feedId]: new RSSFeed(
                     action.feedId,
-                    state[action.feedId].sids,
+                    targetFeed.sids,
                     action.filter
                 ),
             }
+        }
         case FETCH_ITEMS:
             switch (action.status) {
                 case ActionStatus.Success: {
@@ -499,9 +504,9 @@ export function feedReducer(
                                     FeedFilter.testItem(feed.filter, i)
                             )
                             if (items.length > 0) {
-                                let oldItems = feed.iids.map(
-                                    id => action.itemState[id]
-                                )
+                                let oldItems = feed.iids
+                                    .map(id => action.itemState[id])
+                                    .filter(Boolean)
                                 let nextItems = mergeSortedArrays(
                                     oldItems,
                                     items,
@@ -521,14 +526,17 @@ export function feedReducer(
                 default:
                     return state
             }
-        case DISMISS_ITEMS:
-            let nextState = { ...state }
+        case DISMISS_ITEMS: {
             let feed = state[action.fid]
-            nextState[action.fid] = {
-                ...feed,
-                iids: feed.iids.filter(iid => !action.iids.has(iid)),
+            if (!feed) return state
+            return {
+                ...state,
+                [action.fid]: {
+                    ...feed,
+                    iids: feed.iids.filter(iid => !action.iids.has(iid)),
+                },
             }
-            return nextState
+        }
         case INIT_FEED:
             switch (action.status) {
                 case ActionStatus.Success:
@@ -581,6 +589,26 @@ export function feedReducer(
                 default:
                     return state
             }
+        case BATCH_UPDATE_ITEMS: {
+            if (action.changes.readLater === false) {
+                const removedSet = new Set(action.itemIds)
+                let changed = false
+                const nextState = { ...state }
+                for (const feed of Object.values(state)) {
+                    if (feed.loaded && feed.filter.laterOnly) {
+                        const filtered = feed.iids.filter(
+                            id => !removedSet.has(id)
+                        )
+                        if (filtered.length !== feed.iids.length) {
+                            nextState[feed._id] = { ...feed, iids: filtered }
+                            changed = true
+                        }
+                    }
+                }
+                return changed ? nextState : state
+            }
+            return state
+        }
         case UPDATE_ITEM_META:
         case TOGGLE_HIDDEN: {
             let nextItem =

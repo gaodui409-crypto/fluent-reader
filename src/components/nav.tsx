@@ -6,7 +6,7 @@ import intl from "react-intl-universal"
 import { Icon } from "@fluentui/react/lib/Icon"
 import { IObjectWithKey } from "@fluentui/react"
 import { useAppDispatch, useAppSelector } from "../scripts/reducer"
-import { fetchItems, markAllRead } from "../scripts/models/item"
+import { fetchItems } from "../scripts/models/item"
 import {
     makeStyles,
     mergeClasses,
@@ -35,11 +35,15 @@ const useClasses = makeStyles({
     nav: {
         "display": "flex",
         "&.searching .refresh-status": { display: "none" },
-        "@media (max-width:1000px)": {
+        "@media (max-width: 1360px)": {
+            "&.menu-on.searching .reading-controls, &.menu-on.searching #log-toggle, &.menu-on.searching #full-search-toggle":
+                { display: "none" },
+        },
+        "@media (max-width: 1060px)": {
             "&.searching .reading-controls, &.searching #log-toggle, &.searching #full-search-toggle":
                 { display: "none" },
         },
-        "@media (max-width:800px)": {
+        "@media (max-width: 800px)": {
             "&.searching button": { width: "36px" },
             "&.searching #mark-all-toggle, &.searching #view-toggle": {
                 display: "none",
@@ -49,6 +53,8 @@ const useClasses = makeStyles({
     navContent: {
         flexGrow: 1,
         minWidth: 0,
+        display: "flex",
+        alignItems: "center",
     },
     windowControls: {
         flexShrink: 0,
@@ -88,9 +94,13 @@ const useClasses = makeStyles({
     },
     navGroupFirst: {
         marginLeft: "72px",
+        flexShrink: 0,
     },
     navGroupRight: {
-        float: "right",
+        marginLeft: "auto",
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
     },
     refreshStatus: {
         "display": "inline-block",
@@ -105,8 +115,32 @@ const useClasses = makeStyles({
     },
 })
 
+function isInteractiveInput(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false
+    const tag = target.tagName
+    return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable
+    )
+}
+
+function hasOpenModalOrDialog(): boolean {
+    return Array.from(
+        document.querySelectorAll<HTMLElement>(
+            ".ms-Dialog-main, .ms-Modal-scrollableContent, .fui-DialogSurface, .ms-ContextualMenu, .ms-Dropdown-callout, .ms-ComboBox-callout, .ms-DatePicker-callout, .fui-MenuPopover, .fui-Listbox"
+        )
+    ).some(
+        el =>
+            el.getClientRects().length > 0 &&
+            getComputedStyle(el).visibility !== "hidden"
+    )
+}
+
 const Nav: React.FC = () => {
     const searchOn = useAppSelector(state => state.page.searchOn)
+    const itemId = useAppSelector(state => state.page.itemId)
     const classes = useClasses()
     const dispatch = useAppDispatch()
     const state = useAppSelector(state => state.app)
@@ -181,35 +215,87 @@ const Nav: React.FC = () => {
 
     const navShortcutsHandler = useCallback(
         (e: KeyboardEvent | IObjectWithKey) => {
-            if (!state.settings.display) {
-                switch (e.key) {
-                    case "F1":
-                        menu()
-                        break
-                    case "F2":
-                        search()
-                        break
-                    case "F5":
-                        fetch()
-                        break
-                    case "F6":
-                        markAllDirect()
-                        break
-                    case "F7":
-                        if (!articleOverlayOpen) logs()
-                        break
-                    case "F8":
-                        if (!articleOverlayOpen) views()
-                        break
-                    case "F9":
-                        if (!articleOverlayOpen) settings()
-                        break
-                }
+            const kb = e as KeyboardEvent
+            if (kb.ctrlKey || kb.altKey || kb.metaKey) return
+            if (state.settings.display || hasOpenModalOrDialog()) return
+
+            switch (e.key) {
+                case "F1":
+                    kb.preventDefault?.()
+                    kb.stopPropagation?.()
+                    menu()
+                    return
+                case "F2":
+                    kb.preventDefault?.()
+                    kb.stopPropagation?.()
+                    search()
+                    return
+                case "F5":
+                    kb.preventDefault?.()
+                    kb.stopPropagation?.()
+                    fetch()
+                    return
+                case "F6":
+                    kb.preventDefault?.()
+                    kb.stopPropagation?.()
+                    markAllDirect()
+                    return
+                case "F7":
+                    if (!articleOverlayOpen) {
+                        kb.preventDefault?.()
+                        kb.stopPropagation?.()
+                        logs()
+                    }
+                    return
+                case "F8":
+                    if (!articleOverlayOpen) {
+                        kb.preventDefault?.()
+                        kb.stopPropagation?.()
+                        views()
+                    }
+                    return
+                case "F9":
+                    if (!articleOverlayOpen) {
+                        kb.preventDefault?.()
+                        kb.stopPropagation?.()
+                        settings()
+                    }
+                    return
+            }
+
+            // J / K list card keyboard navigation when no article, input, or modal is active
+            if (
+                !itemId &&
+                (e.key === "j" ||
+                    e.key === "J" ||
+                    e.key === "k" ||
+                    e.key === "K") &&
+                !isInteractiveInput(kb.target) &&
+                !hasOpenModalOrDialog()
+            ) {
+                const cards = Array.from(
+                    document.querySelectorAll<HTMLElement>(
+                        "#refocus div[data-iid]"
+                    )
+                )
+                if (!cards.length) return
+                kb.preventDefault?.()
+                const active = document.activeElement as HTMLElement | null
+                const idx = active ? cards.indexOf(active) : -1
+                const delta = e.key === "j" || e.key === "J" ? 1 : -1
+                const nextIdx =
+                    idx < 0
+                        ? 0
+                        : Math.max(0, Math.min(cards.length - 1, idx + delta))
+                const nextCard = cards[nextIdx]
+                nextCard?.focus()
+                nextCard?.scrollIntoView({ block: "nearest" })
             }
         },
         [
             state.settings.display,
             articleOverlayOpen,
+            itemId,
             menu,
             search,
             fetch,
@@ -223,19 +309,15 @@ const Nav: React.FC = () => {
     useEffect(() => {
         setBodyFullscreenState(globalThis.utils.isFullscreen())
         globalThis.utils.addWindowStateListener(windowStateListener)
-
-        return () => {
-            // Cleanup will be handled by the event listener removal effect
-        }
     }, [setBodyFullscreenState, windowStateListener])
 
     useEffect(() => {
-        document.addEventListener("keydown", navShortcutsHandler)
+        window.addEventListener("keydown", navShortcutsHandler, true)
         if (globalThis.utils.platform === "darwin")
             globalThis.utils.addTouchBarEventsListener(navShortcutsHandler)
 
         return () => {
-            document.removeEventListener("keydown", navShortcutsHandler)
+            window.removeEventListener("keydown", navShortcutsHandler, true)
         }
     }, [navShortcutsHandler])
 
@@ -412,7 +494,6 @@ const Nav: React.FC = () => {
                     {!isDarwin && <FlatButtonSeparator />}
                 </FlatButtonGroup>
             </div>
-            {/* Window controls must remain sharp and above the article overlay. */}
             {!isDarwin && (
                 <FlatButtonGroup styleClass={classes.windowControls}>
                     <FlatButton

@@ -27,7 +27,7 @@ export const defaultSourcePreferences: SourcePreferences = {
     autoOffline: false,
     fetchFrequency: 0,
     unreadExpiryDays: 0,
-    aiEnabled: false,
+    aiEnabled: true,
     autoTranslateTitle: false,
     autoSummary: false,
 }
@@ -37,6 +37,7 @@ export function resolveSourcePreferences(
     groups: Pick<SourceGroup, "gid" | "isMultiple" | "sids">[],
     overrides: PreferenceOverrides
 ): SourcePreferences {
+    if (!source) return { ...defaultSourcePreferences }
     const group = groups.find(
         group => group.isMultiple && group.sids.includes(source.sid)
     )
@@ -54,16 +55,16 @@ export function validateSourcePreferences(
     input: Partial<SourcePreferences>
 ): Partial<SourcePreferences> {
     if (!input || typeof input !== "object" || Array.isArray(input))
-        throw new Error("Invalid source preferences.")
+        throw new Error("源设置格式无效。")
     const result: Partial<SourcePreferences> = {}
     for (const key of Object.keys(input) as (keyof SourcePreferences)[]) {
         const value = input[key]
         if (value === undefined || value === null) continue
         if (!(key in defaultSourcePreferences))
-            throw new Error("Unknown source preference: " + key)
+            throw new Error("未知的设置项：" + key)
         if (key === "fetchMode") {
             if (!["direct", "rendered", "off"].includes(String(value)))
-                throw new Error("Invalid fetching mode.")
+                throw new Error("抓取方式无效。")
         } else if (
             ["openTarget", "fetchFrequency", "unreadExpiryDays"].includes(key)
         ) {
@@ -79,9 +80,9 @@ export function validateSourcePreferences(
                 value < 0 ||
                 value > maximum
             )
-                throw new Error("Invalid preference: " + key)
+                throw new Error("设置数值超出允许范围：" + key)
         } else if (typeof value !== "boolean")
-            throw new Error("Invalid preference: " + key)
+            throw new Error("开关设置无效：" + key)
         Object.assign(result, { [key]: value })
     }
     return result

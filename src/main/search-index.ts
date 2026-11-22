@@ -4,42 +4,87 @@ import type { IndexProgress, SearchHit } from "../personal-types"
 export class SearchIndex {
     progress: IndexProgress = { indexed: 0, total: 0, running: false }
     private stopped = false
+    private loopActive = false
 
     constructor(private sqlite: Database.Database) {}
 
-    start() {
+    start(reset = false) {
         this.stopped = false
-        this.progress.running = true
+        if (reset) {
+            try {
+                this.sqlite.prepare("DELETE FROM article_fts").run()
+            } catch (error) {
+                this.progress = {
+                    ...this.progress,
+                    running: false,
+                    error: String(error),
+                }
+                return
+            }
+        }
+        if (this.loopActive) return
+        this.loopActive = true
+        const total = (
+            this.sqlite.prepare("SELECT count(*) AS n FROM items").get() as {
+                n: number
+            }
+        ).n
+        const initialIndexed = (
+            this.sqlite
+                .prepare("SELECT count(*) AS n FROM article_fts")
+                .get() as { n: number }
+        ).n
+        this.progress = {
+            indexed: initialIndexed,
+            total,
+            running: initialIndexed < total,
+        }
         const batch = () => {
-            if (this.stopped) return
+            if (this.stopped) {
+                this.loopActive = false
+                this.progress = { ...this.progress, running: false }
+                return
+            }
             try {
                 const rows = this.sqlite
                     .prepare(
                         "SELECT i._id FROM items i LEFT JOIN article_fts f ON f.rowid=i._id WHERE f.rowid IS NULL LIMIT 100"
                     )
                     .all() as { _id: number }[]
-                const insert = this.sqlite
-                    .prepare(`INSERT OR REPLACE INTO article_fts(rowid,title,body,fullText,offlineText,notes)
-                    SELECT i._id,i.title,html_text(i.content),coalesce(c.fullText,''),coalesce(c.offlineText,''),coalesce(n.text,'')
-                    FROM items i LEFT JOIN article_content c ON c.itemId=i._id LEFT JOIN article_notes n ON n.itemId=i._id WHERE i._id=?`)
-                this.sqlite.transaction(() =>
-                    rows.forEach(row => insert.run(row._id))
-                )()
-                this.progress = {
-                    indexed: (
-                        this.sqlite
-                            .prepare("SELECT count(*) AS n FROM article_fts")
-                            .get() as { n: number }
-                    ).n,
-                    total: (
-                        this.sqlite
-                            .prepare("SELECT count(*) AS n FROM items")
-                            .get() as { n: number }
-                    ).n,
-                    running: rows.length === 100,
+                if (rows.length > 0) {
+                    const insert = this.sqlite
+                        .prepare(`INSERT OR REPLACE INTO article_fts(rowid,title,body,fullText,offlineText,notes)
+                        SELECT i._id,i.title,html_text(i.content),coalesce(c.fullText,''),coalesce(c.offlineText,''),coalesce(n.text,'')
+                        FROM items i LEFT JOIN article_content c ON c.itemId=i._id LEFT JOIN article_notes n ON n.itemId=i._id WHERE i._id=?`)
+                    this.sqlite.transaction(() =>
+                        rows.forEach(row => insert.run(row._id))
+                    )()
                 }
-                if (this.progress.running) setTimeout(batch, 10)
+                const running = rows.length === 100
+                const currentTotal = (
+                    this.sqlite
+                        .prepare("SELECT count(*) AS n FROM items")
+                        .get() as { n: number }
+                ).n
+                const currentIndexed = running
+                    ? Math.min(
+                          currentTotal,
+                          this.progress.indexed + rows.length
+                      )
+                    : (
+                          this.sqlite
+                              .prepare("SELECT count(*) AS n FROM article_fts")
+                              .get() as { n: number }
+                      ).n
+                this.progress = {
+                    indexed: currentIndexed,
+                    total: currentTotal,
+                    running,
+                }
+                if (running) setTimeout(batch, 10)
+                else this.loopActive = false
             } catch (error) {
+                this.loopActive = false
                 this.progress = {
                     ...this.progress,
                     running: false,
@@ -76,33 +121,33 @@ export class SearchIndex {
                     .join(" AND ")
             )
         }
+        const columns = ["title", "body", "fullText", "offlineText", "notes"]
         for (const term of short) {
+            const escaped = "%" + term.replace(/[\\%_]/g, "\\$&") + "%"
             conditions.push(
-                "(f.title || char(10) || f.body || char(10) || f.fullText || char(10) || f.offlineText || char(10) || coalesce(f.notes,'')) LIKE ? ESCAPE '\\'"
+                "(" +
+                    columns
+                        .map(col => `coalesce(f.${col},'') LIKE ? ESCAPE '\\'`)
+                        .join(" OR ") +
+                    ")"
             )
-            params.push("%" + term.replace(/[\\%_]/g, "\\$&") + "%")
+            for (let i = 0; i < columns.length; i++) params.push(escaped)
         }
         const rankParams: string[] = []
         const rank = long.length
             ? "bm25(article_fts,6,1,1,1,2)"
             : "-(" +
               short
-                  .map(term => {
-                      return [
-                          "title",
-                          "body",
-                          "fullText",
-                          "offlineText",
-                          "notes",
-                      ]
+                  .map(term =>
+                      columns
                           .map((field, index) => {
                               rankParams.push(term)
-                              return `CASE WHEN instr(lower(f.${field}),lower(?))>0 THEN ${
+                              return `CASE WHEN instr(lower(coalesce(f.${field},'')),lower(?))>0 THEN ${
                                   index === 0 ? 6 : 1
                               } ELSE 0 END`
                           })
                           .join(" + ")
-                  })
+                  )
                   .join(" + ") +
               ")"
         const rows = this.sqlite
@@ -123,6 +168,7 @@ export class SearchIndex {
             fullText: string
             offlineText: string
         })[]
+        const lowerTerms = terms.map(t => t.toLocaleLowerCase())
         return rows.map(
             ({
                 id,
@@ -135,19 +181,16 @@ export class SearchIndex {
                 rank,
             }) => {
                 const text =
-                    [notes, body, fullText, offlineText].find(value =>
-                        terms.some(term =>
-                            value
-                                .toLocaleLowerCase()
-                                .includes(term.toLocaleLowerCase())
-                        )
-                    ) || body
-                const positions = terms
-                    .map(term =>
-                        text
-                            .toLocaleLowerCase()
-                            .indexOf(term.toLocaleLowerCase())
-                    )
+                    [notes, body, fullText, offlineText].find(value => {
+                        if (!value) return false
+                        const lower = value.toLocaleLowerCase()
+                        return lowerTerms.some(term => lower.includes(term))
+                    }) ||
+                    body ||
+                    ""
+                const lowerText = text.toLocaleLowerCase()
+                const positions = lowerTerms
+                    .map(term => lowerText.indexOf(term))
                     .filter(pos => pos >= 0)
                 const start = Math.max(
                     0,
@@ -159,7 +202,9 @@ export class SearchIndex {
                     source,
                     rank,
                     excerpt:
-                        (start ? "…" : "") + text.slice(start, start + 250),
+                        (start ? "…" : "") +
+                        text.slice(start, start + 240) +
+                        (text.length > start + 240 ? "…" : ""),
                 }
             }
         )

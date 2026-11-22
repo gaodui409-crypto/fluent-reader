@@ -25,9 +25,12 @@ export function safeFilename(
         : name
 }
 
+const MAX_RETAINED_TASKS = 150
+
 export class OfflinePages {
     private pending = new Map<number, Promise<string>>()
     private tasks = new Map<number, OfflineTask>()
+    private cancelledSeq = new Map<number, number>()
     private captures = new Map<
         number,
         {
@@ -57,6 +60,16 @@ export class OfflinePages {
                     })
                 if (!response.ok)
                     throw new Error(`Resource HTTP ${response.status}`)
+                const contentType =
+                    response.headers.get("content-type") ||
+                    "application/octet-stream"
+                if (!response.body) {
+                    return {
+                        bytes: Buffer.alloc(0),
+                        status: response.status,
+                        headers: { "content-type": contentType },
+                    }
+                }
                 const chunks: Uint8Array[] = []
                 let size = 0
                 const reader = response.body.getReader()
@@ -70,18 +83,16 @@ export class OfflinePages {
                         capture.bytes > 150 * 1024 * 1024
                     ) {
                         await reader.cancel()
-                        throw new Error("Offline page resource limit exceeded.")
+                        throw new Error(
+                            "网页内图片或媒体体积过大（超出离线打包上限），建议在浏览器中打开。"
+                        )
                     }
                     chunks.push(value)
                 }
                 return {
                     bytes: Buffer.concat(chunks),
                     status: 200,
-                    headers: {
-                        "content-type":
-                            response.headers.get("content-type") ||
-                            "application/octet-stream",
-                    },
+                    headers: { "content-type": contentType },
                 }
             } catch (error) {
                 return { error: String(error) }
@@ -96,13 +107,39 @@ export class OfflinePages {
                 result.html.length > 200 * 1024 * 1024 ||
                 typeof result.text !== "string"
             )
-                capture.reject(new Error("Invalid saved page."))
+                capture.reject(new Error("离线页面内容无效或体积过大。"))
             else capture.resolve(result)
         })
     }
-    snapshot() {
-        return [...this.tasks.values()].map(task => ({ ...task })).slice(-100)
+
+    private pruneTasks() {
+        if (this.tasks.size <= MAX_RETAINED_TASKS) return
+        for (const [key, task] of this.tasks) {
+            if (this.tasks.size <= MAX_RETAINED_TASKS) break
+            if (task.state === "done" || task.state === "failed") {
+                this.tasks.delete(key)
+            }
+        }
     }
+
+    snapshot() {
+        return [...this.tasks.values()].slice(-100).map(task => ({ ...task }))
+    }
+
+    tasksByItem(): Record<number, OfflineTask> {
+        const out: Record<number, OfflineTask> = {}
+        for (const [id, task] of this.tasks) {
+            if (
+                task.state === "waiting" ||
+                task.state === "running" ||
+                task.state === "failed"
+            ) {
+                out[id] = { ...task }
+            }
+        }
+        return out
+    }
+
     savedIds(): number[] {
         return (
             this.sqlite
@@ -112,11 +149,21 @@ export class OfflinePages {
                 .all() as { itemId: number }[]
         ).map(row => row.itemId)
     }
+
+    clearTasks() {
+        this.tasks.clear()
+        this.cancelledSeq.clear()
+    }
+
     private async capture(contents: WebContents) {
         return new Promise<{ html: string; text: string }>(
             (resolve, reject) => {
+                if (contents.isDestroyed()) {
+                    reject(new Error("离线保存被中断，请点击重试。"))
+                    return
+                }
                 const timeout = setTimeout(
-                    () => fail(new Error("Offline capture timed out.")),
+                    () => fail(new Error("离线网页打包超时（超过 90 秒）。")),
                     90000
                 )
                 const cleanup = () => {
@@ -129,7 +176,7 @@ export class OfflinePages {
                     reject(error)
                 }
                 const destroyed = () =>
-                    fail(new Error("The capture window closed."))
+                    fail(new Error("离线保存被中断，请点击重试。"))
                 this.captures.set(contents.id, {
                     bytes: 0,
                     resolve: value => {
@@ -143,8 +190,9 @@ export class OfflinePages {
             }
         )
     }
+
     async save(id: number): Promise<string> {
-        if (!Number.isSafeInteger(id)) throw new Error("Invalid article.")
+        if (!Number.isSafeInteger(id)) throw new Error("无效的文章。")
         if (this.pending.has(id)) return this.pending.get(id)
         const item = this.sqlite
             .prepare(
@@ -157,25 +205,37 @@ export class OfflinePages {
             date: number
             name: string
         }
-        if (!item) throw new Error("The article no longer exists.")
+        if (!item) throw new Error("文章已不存在。")
         if (!this.preferences(item.source).offlineEnabled)
-            throw new Error("Offline saving is disabled for this source.")
+            throw new Error(
+                "此订阅源已关闭离线保存，可在「源与分组阅读偏好」中开启。"
+            )
+        const validUrl = httpURL(item.link).href
+        const seq = this.cancelledSeq.get(id) || 0
+
         const task: OfflineTask = { id, title: item.title, state: "waiting" }
+        this.tasks.delete(id)
         this.tasks.set(id, task)
+        this.pruneTasks()
+        this.updated()
+
         const work = this.queue
-            .add(item.link, "offlineSave", async () => {
+            .add(validUrl, "offlineSave", async () => {
+                if ((this.cancelledSeq.get(id) || 0) !== seq) {
+                    throw new Error("离线保存已取消。")
+                }
                 task.state = "running"
-                const preload = path.join(
-                    app.getAppPath(),
-                    app.isPackaged ? "dist" : "",
-                    "offline-preload.js"
-                )
+                this.updated()
+                const preload = path.join(__dirname, "offline-preload.js")
                 const page = await renderedPage(
-                    item.link,
+                    validUrl,
                     win => this.capture(win.webContents),
                     preload,
                     120000
                 )
+                if ((this.cancelledSeq.get(id) || 0) !== seq) {
+                    throw new Error("离线保存已取消。")
+                }
                 const root =
                     this.settings().offlineFolder ||
                     path.join(app.getPath("userData"), "offline")
@@ -208,25 +268,48 @@ export class OfflinePages {
                             throw error
                     }
                 }
-                this.sqlite.transaction(() => {
-                    this.sqlite
-                        .prepare(
-                            "INSERT INTO article_content(itemId,offlinePath,offlineText) VALUES(?,?,?) ON CONFLICT(itemId) DO UPDATE SET offlinePath=excluded.offlinePath,offlineText=excluded.offlineText"
-                        )
-                        .run(id, output, page.text.slice(0, 8 * 1024 * 1024))
-                    this.sqlite
-                        .prepare("UPDATE items SET saveRequested=0 WHERE _id=?")
-                        .run(id)
-                })()
+                try {
+                    this.sqlite.transaction(() => {
+                        if ((this.cancelledSeq.get(id) || 0) !== seq) {
+                            throw new Error("离线保存已取消。")
+                        }
+                        if (
+                            !this.sqlite
+                                .prepare("SELECT 1 FROM items WHERE _id=?")
+                                .get(id)
+                        ) {
+                            throw new Error("文章在离线保存完成前已被删除。")
+                        }
+                        this.sqlite
+                            .prepare(
+                                "INSERT INTO article_content(itemId,offlinePath,offlineText) VALUES(?,?,?) ON CONFLICT(itemId) DO UPDATE SET offlinePath=excluded.offlinePath,offlineText=excluded.offlineText"
+                            )
+                            .run(
+                                id,
+                                output,
+                                page.text.slice(0, 8 * 1024 * 1024)
+                            )
+                        this.sqlite
+                            .prepare(
+                                "UPDATE items SET saveRequested=0,kept=1 WHERE _id=?"
+                            )
+                            .run(id)
+                    })()
+                } catch (dbErr) {
+                    await fs.unlink(output).catch(() => {})
+                    throw dbErr
+                }
                 task.state = "done"
                 task.path = output
                 this.updated()
                 return output
             })
             .catch(error => {
-                task.state = "failed"
-                task.error = String(error)
-                this.updated()
+                if ((this.cancelledSeq.get(id) || 0) === seq) {
+                    task.state = "failed"
+                    task.error = String(error)
+                    this.updated()
+                }
                 throw error
             })
         this.pending.set(id, work)
@@ -236,8 +319,9 @@ export class OfflinePages {
             this.pending.delete(id)
         }
     }
+
     async open(id: number, reveal = false) {
-        if (!Number.isSafeInteger(id)) throw new Error("Invalid article.")
+        if (!Number.isSafeInteger(id)) throw new Error("无效的文章。")
         const row = this.sqlite
             .prepare("SELECT offlinePath FROM article_content WHERE itemId=?")
             .get(id) as { offlinePath: string }
@@ -245,13 +329,47 @@ export class OfflinePages {
             !row?.offlinePath ||
             path.extname(row.offlinePath).toLowerCase() !== ".html"
         )
-            throw new Error("No local copy is available.")
-        await fs.access(row.offlinePath)
+            throw new Error(
+                "这篇文章尚未保存离线网页，请先点击「保存到本地」。"
+            )
+        try {
+            await fs.access(row.offlinePath)
+        } catch {
+            throw new Error(
+                "本地离线网页文件已被移动或删除，可重新执行「保存到本地」恢复。"
+            )
+        }
         if (reveal) shell.showItemInFolder(row.offlinePath)
         else {
             const error = await shell.openPath(row.offlinePath)
             if (error) throw new Error(error)
         }
+        return true
+    }
+
+    async remove(id: number) {
+        if (!Number.isSafeInteger(id)) throw new Error("无效的文章。")
+        this.cancelledSeq.set(id, (this.cancelledSeq.get(id) || 0) + 1)
+        const row = this.sqlite
+            .prepare("SELECT offlinePath FROM article_content WHERE itemId=?")
+            .get(id) as { offlinePath: string } | undefined
+        if (
+            row?.offlinePath &&
+            path.extname(row.offlinePath).toLowerCase() === ".html"
+        ) {
+            try {
+                await fs.unlink(row.offlinePath)
+            } catch (err) {
+                if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err
+            }
+        }
+        this.sqlite
+            .prepare(
+                "UPDATE article_content SET offlinePath='',offlineText='' WHERE itemId=?"
+            )
+            .run(id)
+        this.tasks.delete(id)
+        this.updated()
         return true
     }
 }

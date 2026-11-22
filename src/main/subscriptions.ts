@@ -44,7 +44,7 @@ export class Subscriptions {
                 request.abort()
             }
             const timer = setTimeout(
-                () => fail(new Error("Subscription request timed out.")),
+                () => fail(new Error("订阅源连接超时（超过 30 秒）。")),
                 30000
             )
             request.on("error", error => {
@@ -53,8 +53,9 @@ export class Subscriptions {
             })
             request.on("redirect", (status, _, target) => {
                 try {
-                    if (++redirects > 8) throw new Error("Too many redirects.")
-                    url = httpURL(target).href
+                    if (++redirects > 8)
+                        throw new Error("订阅地址跳转次数过多。")
+                    url = httpURL(new URL(target, url).href).href
                     if (
                         [301, 308].includes(status) &&
                         permanent !== "temporary"
@@ -72,12 +73,12 @@ export class Subscriptions {
                 response.on("data", chunk => {
                     size += chunk.length
                     if (size > 16 * 1024 * 1024)
-                        fail(new Error("Subscription exceeds 16 MB."))
+                        fail(new Error("订阅源返回内容超过 16 MB 上限。"))
                     else chunks.push(Buffer.from(chunk))
                 })
                 response.on("error", fail)
                 response.on("aborted", () =>
-                    fail(new Error("Subscription response was interrupted."))
+                    fail(new Error("订阅源响应被中断。"))
                 )
                 response.on("end", () => {
                     clearTimeout(timer)
@@ -130,20 +131,21 @@ export class Subscriptions {
             const { document } = parseHTML(page.text)
             let base = page.url
             try {
-                base = httpURL(
-                    new URL(
-                        document
-                            .querySelector("base[href]")
-                            ?.getAttribute("href") || "",
-                        base
-                    ).href
-                ).href
+                const baseHref = document
+                    .querySelector("base[href]")
+                    ?.getAttribute("href")
+                    ?.trim()
+                if (baseHref) {
+                    base = httpURL(new URL(baseHref, base).href).href
+                }
             } catch {
                 /* ignore invalid base */
             }
             const found = new Map<string, DiscoveredFeed>()
             for (const link of document.querySelectorAll("link[href]")) {
+                const rawHref = (link.getAttribute("href") || "").trim()
                 if (
+                    !rawHref ||
                     !/\balternate\b/i.test(link.getAttribute("rel") || "") ||
                     !/application\/(rss\+xml|atom\+xml|rdf\+xml)/i.test(
                         link.getAttribute("type") || ""
@@ -151,12 +153,10 @@ export class Subscriptions {
                 )
                     continue
                 try {
-                    const url = httpURL(
-                        new URL(link.getAttribute("href"), base).href
-                    ).href
+                    const url = httpURL(new URL(rawHref, base).href).href
                     found.set(url, {
                         url,
-                        title: link.getAttribute("title") || url,
+                        title: link.getAttribute("title")?.trim() || url,
                     })
                 } catch {
                     /* Ignore unsafe discovery links. */
@@ -208,7 +208,7 @@ export class Subscriptions {
     }
 
     opened(id: number) {
-        if (!Number.isSafeInteger(id)) throw new Error("Invalid article.")
+        if (!Number.isSafeInteger(id)) throw new Error("无效的文章编号。")
         this.db
             .prepare(
                 "INSERT INTO article_activity(itemId,openedAt) SELECT _id,? FROM items WHERE _id=? ON CONFLICT(itemId) DO UPDATE SET openedAt=excluded.openedAt"
@@ -219,6 +219,7 @@ export class Subscriptions {
 
     health(): SourceHealth[] {
         const cutoff = Date.now() - 30 * 86400000
+        const staleCutoff = Date.now() - this.settings().staleDays * 86400000
         const rows = this.db
             .prepare(
                 `SELECT s.sid,s.name,s.url,s.serviceRef,s.lastFetched,
@@ -234,8 +235,7 @@ export class Subscriptions {
         })[]
         return rows.map(row => ({
             ...row,
-            stale:
-                row.latest < Date.now() - this.settings().staleDays * 86400000,
+            stale: row.latest < staleCutoff,
             service: !!row.serviceRef,
         }))
     }
@@ -275,9 +275,16 @@ export class Subscriptions {
     }
 
     applyRedirect(sid: number) {
-        const source = this.health().find(row => row.sid === sid)
-        if (!source || !source.redirect || source.service)
-            throw new Error("No local permanent redirect to apply.")
+        if (!Number.isSafeInteger(sid)) throw new Error("无效的订阅源。")
+        const source = this.db
+            .prepare(
+                "SELECT s.sid,s.serviceRef,COALESCE(h.redirect,'') AS redirect FROM sources s LEFT JOIN source_health h ON h.sid=s.sid WHERE s.sid=? AND s.archived=0"
+            )
+            .get(sid) as
+            | { sid: number; serviceRef: string | null; redirect: string }
+            | undefined
+        if (!source || !source.redirect || source.serviceRef)
+            throw new Error("该订阅源当前没有可更新的永久跳转地址。")
         const url = httpURL(source.redirect).href
         this.db.transaction(() => {
             this.db

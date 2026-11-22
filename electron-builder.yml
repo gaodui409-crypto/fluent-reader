@@ -4,6 +4,8 @@ copyright: Copyright © 2020 Haoyuan Liu
 # better-sqlite3 13 ships Node-API prebuilds, including Windows x64/arm64.
 # Rebuilding them unnecessarily requires a local C++ toolchain.
 npmRebuild: false
+asarUnpack:
+    - "./dist/archive-worker.js"
 files:
     - "./dist/**/*"
     - "!./dist/fontlist"

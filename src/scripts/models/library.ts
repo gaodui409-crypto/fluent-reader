@@ -1,20 +1,25 @@
-import { and, eq, lt, sql } from "drizzle-orm"
+import { and, eq, inArray, lt, sql } from "drizzle-orm"
 import { database, itemsTable } from "../db"
 import type { AppThunk } from "../utils"
-import { RSSItem, markRead, updateItemMeta } from "./item"
+import { BATCH_UPDATE_ITEMS, MARK_ALL_READ, RSSItem } from "./item"
 import { resolveSourcePreferences } from "../../source-preferences"
 import intl from "react-intl-universal"
 import { updateUnreadCounts } from "./source"
+import { getServiceHooks } from "./service"
+import type { OfflineTask } from "../../personal-types"
 
-type LibraryState = {
+export type LibraryState = {
     saved: number[]
+    offlineTasks?: Record<number, OfflineTask>
     removeLaterOnRead: boolean
     aiConfigured: boolean
     titles: Record<number, string>
 }
+
 export function libraryReducer(
     state: LibraryState = {
         saved: [],
+        offlineTasks: {},
         removeLaterOnRead: false,
         aiConfigured: false,
         titles: {},
@@ -23,6 +28,7 @@ export function libraryReducer(
 ) {
     return action.type === "LIBRARY_STATE" ? action.library : state
 }
+
 export function loadLibrary(): AppThunk<Promise<void>> {
     return async dispatch => {
         dispatch({
@@ -31,12 +37,14 @@ export function loadLibrary(): AppThunk<Promise<void>> {
         })
     }
 }
+
 export function saveOffline(id: number): AppThunk<Promise<void>> {
     return async dispatch => {
         try {
             await window.personal.saveOffline(id)
             await dispatch(loadLibrary())
         } catch (error) {
+            await dispatch(loadLibrary()).catch(() => {})
             window.utils.showErrorBox(
                 intl.get("personal.offlineFailed"),
                 String(error)
@@ -44,6 +52,21 @@ export function saveOffline(id: number): AppThunk<Promise<void>> {
         }
     }
 }
+
+export function deleteOffline(id: number): AppThunk<Promise<void>> {
+    return async dispatch => {
+        try {
+            await window.personal.deleteOffline?.(id)
+            await dispatch(loadLibrary())
+        } catch (error) {
+            window.utils.showErrorBox(
+                intl.get("personal.failed"),
+                String(error)
+            )
+        }
+    }
+}
+
 export function openOffline(id: number, reveal = false) {
     void window.personal
         .openOffline(id, reveal)
@@ -54,6 +77,7 @@ export function openOffline(id: number, reveal = false) {
             )
         )
 }
+
 let expiring = false
 export function expireUnread(): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
@@ -61,6 +85,8 @@ export function expireUnread(): AppThunk<Promise<void>> {
         expiring = true
         try {
             const state = getState()
+            const allExpiredIds: number[] = []
+            const serviceExpiredItems: RSSItem[] = []
             for (const source of Object.values(state.sources)) {
                 const days = resolveSourcePreferences(
                     source,
@@ -69,7 +95,11 @@ export function expireUnread(): AppThunk<Promise<void>> {
                 ).unreadExpiryDays
                 if (!days) continue
                 const rows = await database
-                    .select()
+                    .select({
+                        _id: itemsTable._id,
+                        source: itemsTable.source,
+                        serviceRef: itemsTable.serviceRef,
+                    })
                     .from(itemsTable)
                     .where(
                         and(
@@ -84,8 +114,38 @@ export function expireUnread(): AppThunk<Promise<void>> {
                             )
                         )
                     )
-                for (const row of rows)
-                    await dispatch(markRead(row as unknown as RSSItem))
+                for (const row of rows) {
+                    allExpiredIds.push(row._id)
+                    if (row.serviceRef) {
+                        serviceExpiredItems.push(row as unknown as RSSItem)
+                    }
+                }
+            }
+            if (allExpiredIds.length > 0) {
+                for (
+                    let offset = 0;
+                    offset < allExpiredIds.length;
+                    offset += 400
+                ) {
+                    await database
+                        .update(itemsTable)
+                        .set({ hasRead: true })
+                        .where(
+                            inArray(
+                                itemsTable._id,
+                                allExpiredIds.slice(offset, offset + 400)
+                            )
+                        )
+                }
+                const hooks = dispatch(getServiceHooks())
+                for (const item of serviceExpiredItems) {
+                    if (hooks.markRead) dispatch(hooks.markRead(item))
+                }
+                dispatch({
+                    type: MARK_ALL_READ,
+                    sids: [],
+                    itemIds: allExpiredIds,
+                })
             }
         } finally {
             expiring = false
@@ -93,10 +153,11 @@ export function expireUnread(): AppThunk<Promise<void>> {
         }
     }
 }
+
 export function clearReadLater(): AppThunk<Promise<void>> {
     return async dispatch => {
         const rows = await database
-            .select()
+            .select({ _id: itemsTable._id })
             .from(itemsTable)
             .where(
                 and(
@@ -113,9 +174,17 @@ export function clearReadLater(): AppThunk<Promise<void>> {
             true
         )
         if (!confirmed) return
-        for (const row of rows)
-            await dispatch(
-                updateItemMeta(row as unknown as RSSItem, { readLater: false })
-            )
+        const ids = rows.map(r => r._id)
+        for (let offset = 0; offset < ids.length; offset += 400) {
+            await database
+                .update(itemsTable)
+                .set({ readLater: false })
+                .where(inArray(itemsTable._id, ids.slice(offset, offset + 400)))
+        }
+        dispatch({
+            type: BATCH_UPDATE_ITEMS,
+            itemIds: ids,
+            changes: { readLater: false },
+        })
     }
 }

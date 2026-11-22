@@ -17,12 +17,19 @@
     --white: #fff;
     --whiteConstant: #fff;
     --primary: #0f6cbd;
+    --sidebarBg: #f3f2f1;
     --navHeight: 32px;
+    --sidebarWidth: 252px;
     --transition-timing: cubic-bezier(0.1, 0.9, 0.2, 1);
     --blur: saturate(150%) blur(20px);
 }
-@media (prefers-color-scheme: dark) {
+@media (min-width: 1440px) {
     :root {
+        --sidebarWidth: 276px;
+    }
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
         --neutralLighterAltOpacity: #282828cc;
         --neutralLighterAlt: #282828;
         --neutralLighter: #313131;
@@ -41,7 +48,29 @@
         --white: #1f1f1f;
         --whiteConstant: #fff;
         --primary: #2886de;
+        --sidebarBg: #202020;
     }
+}
+:root[data-theme="dark"] {
+    --neutralLighterAltOpacity: #282828cc;
+    --neutralLighterAlt: #282828;
+    --neutralLighter: #313131;
+    --neutralLight: #3f3f3f;
+    --neutralQuaternaryAlt: #484848;
+    --neutralQuaternary: #4f4f4f;
+    --neutralTertiaryAlt: #6d6d6d;
+    --neutralTertiary: #c8c8c8;
+    --neutralSecondaryAlt: #d2d0ce;
+    --neutralSecondary: #d0d0d0;
+    --neutralPrimaryAlt: #dadada;
+    --neutralPrimary: #ffffff;
+    --neutralDark: #f4f4f4;
+    --neutralDarker: #f4f4f4;
+    --black: #f8f8f8;
+    --white: #1f1f1f;
+    --whiteConstant: #fff;
+    --primary: #2886de;
+    --sidebarBg: #202020;
 }
 body.darwin {
     --navHeight: 38px;
@@ -130,16 +159,17 @@ body.linux {
     user-select: none;
     margin-bottom: 8px;
 }
-.ms-MessageBar:not(.ms-MessageBar--warning) {
+.ms-MessageBar:not(.ms-MessageBar--warning):not(.ms-MessageBar--error):not(.ms-MessageBar--severeWarning):not(.ms-MessageBar--success) {
     background: var(--neutralLighter);
     color: var(--neutralPrimary);
 }
-.ms-MessageBar:not(.ms-MessageBar--warning) i[data-icon-name="Info"] {
+.ms-MessageBar:not(.ms-MessageBar--warning):not(.ms-MessageBar--error):not(.ms-MessageBar--severeWarning):not(.ms-MessageBar--success)
+    i[data-icon-name="Info"] {
     color: var(--neutralPrimary);
 }
 
 .ms-Callout-main {
-    border-radius: 5px;
+    border-radius: 6px;
 }
 
 #root > nav {
@@ -166,9 +196,10 @@ i[data-icon-name="StatusCircleCheckmark"] {
     font-size: 12px;
     line-height: var(--navHeight);
     vertical-align: top;
-    letter-spacing: 2px;
-    margin: 0 4px;
-    display: inline-block;
+    letter-spacing: 0.4px;
+    margin: 0 12px 0 8px;
+    flex: 0 1 auto;
+    min-width: 48px;
     max-width: 280px;
     white-space: nowrap;
     text-overflow: ellipsis;

@@ -8,7 +8,7 @@ const useStyles = makeStyles({
         "height": "var(--navHeight)",
         "lineHeight": "var(--navHeight)",
         "fontSize": "12px",
-        "color": "#c8c6c4",
+        "color": "var(--neutralQuaternary)",
         "textAlign": "center",
         "verticalAlign": "top",
         "::before": {

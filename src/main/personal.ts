@@ -1,84 +1,68 @@
-import { app, dialog, ipcMain, session, Notification } from "electron"
-import {
-    defaultSourcePreferences,
-    PreferenceOverrides,
-    resolveSourcePreferences,
-    SourcePreferences,
-    validateSourcePreferences,
-} from "../source-preferences"
+import { app, dialog, ipcMain, Notification } from "electron"
+import type { SourcePreferences } from "../source-preferences"
 import type Database from "better-sqlite3"
 import type Store from "electron-store"
 import type { SchemaTypes } from "../schema-types"
-import { defaultPersonalSettings, PersonalSettings } from "../personal-types"
+import type {
+    AIConfig,
+    AIKind,
+    OfflineTask,
+    PersonalSettings,
+} from "../personal-types"
 import type { WindowManager } from "./window"
-import { DomainQueue, httpURL } from "./domain-queue"
+import { DomainQueue } from "./domain-queue"
 import { SearchIndex } from "./search-index"
 import { Backups } from "./backup"
-import { FullText, secureWebWindow, WEB_PARTITION } from "./web-content"
+import { FullText } from "./web-content"
 import { OfflinePages } from "./offline"
 import { Subscriptions } from "./subscriptions"
 import { AI } from "./ai"
-import type { AIConfig, AIKind } from "../personal-types"
 import { ArticleArchive } from "./archive"
 import type { ArchiveAction, ArchiveQuery, ArchiveRule } from "../archive-types"
 import { collectionKey } from "../reading-preferences"
 import { LinuxDo } from "./linuxdo"
 import { linuxDoJSONPath, LINUXDO } from "../linuxdo"
+import { PersonalPreferencesStore } from "./personal-preferences"
+import {
+    clearWebAccount,
+    listWebAccounts,
+    lockWebPartitionPermissions,
+    openWebLoginWindow,
+} from "./personal-accounts"
+import { humanizePersonalError } from "./error-messages"
 
 export function initPersonal(
     sqlite: Database.Database,
     store: Store<SchemaTypes>,
     manager: WindowManager
 ) {
-    const settings = (): PersonalSettings => ({
-        ...defaultPersonalSettings,
-        ...store.get("personal", {} as PersonalSettings),
-    })
-    const queue = new DomainQueue(settings)
-    const preferences = (): PreferenceOverrides =>
-        store.get("sourcePreferences", { sources: {}, groups: {} })
-    if (!store.has("sourcePreferences")) {
-        const initial: PreferenceOverrides = { sources: {}, groups: {} }
-        const sources = sqlite
-            .prepare("SELECT sid,openTarget,fetchFrequency FROM sources")
-            .all() as {
-            sid: number
-            openTarget: number
-            fetchFrequency: number
-        }[]
-        for (const source of sources) {
-            const values: Partial<SourcePreferences> = {}
-            if (source.openTarget) values.openTarget = source.openTarget
-            if (source.fetchFrequency)
-                values.fetchFrequency = source.fetchFrequency
-            if (Object.keys(values).length) initial.sources[source.sid] = values
-        }
-        store.set("sourcePreferences", initial)
-    }
-    const sourcePreferences = (sid: number) => {
-        const source = sqlite
-            .prepare(
-                "SELECT sid,openTarget,fetchFrequency FROM sources WHERE sid=?"
-            )
-            .get(sid) as {
-            sid: number
-            openTarget: number
-            fetchFrequency: number
-        }
-        if (!source) throw new Error("The subscription no longer exists.")
-        return resolveSourcePreferences(
-            source,
-            store.get("sourceGroups", []),
-            preferences()
-        )
-    }
-    const index = new SearchIndex(sqlite)
-    const backups = new Backups(sqlite, store, settings)
-    const fullText = new FullText(sqlite, queue, settings, sourcePreferences)
     const changed = () => {
-        if (manager.hasWindow())
+        if (
+            manager.hasWindow() &&
+            !manager.mainWindow.webContents.isDestroyed()
+        ) {
             manager.mainWindow.webContents.send("personal:changed")
+        }
     }
+    const getLocale = () => store.get("locale", app.getLocale() || "zh-CN")
+    const formatErr = (msg: string) =>
+        msg ? humanizePersonalError(msg, getLocale()) : ""
+
+    const prefStore = new PersonalPreferencesStore(sqlite, store, changed)
+    const settings = prefStore.settings
+    const preferences = prefStore.preferences
+    const sourcePreferences = prefStore.sourcePreferences
+
+    const queue = new DomainQueue(settings)
+    const index = new SearchIndex(sqlite)
+    const backups = new Backups(sqlite, store, settings, changed)
+    const fullText = new FullText(
+        sqlite,
+        queue,
+        settings,
+        sourcePreferences,
+        changed
+    )
     const offline = new OfflinePages(
         sqlite,
         queue,
@@ -109,33 +93,16 @@ export function initPersonal(
             store.get("sourceGroups", []).find(g => g.gid === gid)?.sids || [],
         changed
     )
-    archive.syncLegacyTopics()
-    // Transfer collection preferences by the immutable legacy name; migration is
-    // idempotent and does not replace preferences already chosen for the new ID.
-    const reading = store.get("readingPreferences")
-    if (reading) {
-        const next = { ...reading, collections: { ...reading.collections } }
-        for (const folder of sqlite
-            .prepare(
-                "SELECT id,legacyName FROM article_folders WHERE legacyName IS NOT NULL"
-            )
-            .all() as { id: number; legacyName: string }[]) {
-            const old = next.collections["tag:主题/" + folder.legacyName]
-            if (old && !next.collections["folder:" + folder.id])
-                next.collections["folder:" + folder.id] = old
-        }
-        store.set("readingPreferences", next)
+    try {
+        archive.syncLegacyTopics()
+        prefStore.migrateLegacyFolderReadingPreferences()
+    } catch (err) {
+        console.warn("Legacy folder migration warning:", err)
     }
+
     const handlers = {
         archiveFolders: () => archive.folders(),
-        archiveMemberships: (id: number) =>
-            (
-                sqlite
-                    .prepare(
-                        "SELECT fa.folderId FROM folder_articles fa JOIN article_folders f ON f.id=fa.folderId WHERE fa.itemId=? AND f.deleted=0"
-                    )
-                    .all(id) as { folderId: number }[]
-            ).map(r => r.folderId),
+        archiveMemberships: (id: number) => archive.memberships(id),
         archiveSaveFolder: (
             folder: Parameters<ArticleArchive["saveFolder"]>[0]
         ) => archive.saveFolder(folder),
@@ -172,33 +139,59 @@ export function initPersonal(
         aiSettings: () => ai.settings(),
         saveAI: (config: AIConfig, key?: string) => ai.save(config, key),
         testAI: () => ai.test(),
-        aiGenerate: async (id: number, kind: AIKind) => {
+        aiGenerate: async (id: number, kind: AIKind, force = false) => {
             if (kind === "translation") {
                 const item = sqlite
                     .prepare("SELECT source FROM items WHERE _id=?")
                     .get(id) as { source: number } | undefined
-                if (item && sourcePreferences(item.source).fetchMode !== "off")
-                    await fullText.get(id)
+                if (
+                    item &&
+                    sourcePreferences(item.source).fetchMode !== "off"
+                ) {
+                    try {
+                        await fullText.get(id)
+                    } catch {
+                        // Fall back to RSS or offline content when live full-text fails.
+                    }
+                }
             }
-            return ai.generate(id, kind)
+            return ai.generate(id, kind, !!force)
         },
-        aiUsage: () => ai.usage(),
+        aiArticleState: (id: number) => ai.articleState(id),
+        aiUsage: () => {
+            const u = ai.usage()
+            return { ...u, error: formatErr(u.error) }
+        },
         briefings: () => ai.briefings(),
         createBriefing: () => ai.brief(),
-        library: () => ({
-            saved: offline.savedIds(),
-            removeLaterOnRead: settings().removeLaterOnRead,
-            aiConfigured: ai.settings().configured,
-            titles: ai.titles(),
-        }),
+        deleteBriefing: (id: number) => {
+            const res = ai.deleteBriefing(id)
+            changed()
+            return res
+        },
+        library: () => {
+            const rawTasks = offline.tasksByItem()
+            const offlineTasks: Record<number, OfflineTask> = {}
+            for (const [k, t] of Object.entries(rawTasks)) {
+                offlineTasks[Number(k)] = { ...t, error: formatErr(t.error) }
+            }
+            return {
+                saved: offline.savedIds(),
+                offlineTasks,
+                removeLaterOnRead: settings().removeLaterOnRead,
+                aiConfigured: ai.settings().configured,
+                titles: ai.titles(),
+            }
+        },
         saveOffline: (id: number) => offline.save(id),
         openOffline: (id: number, reveal: boolean) =>
             offline.open(id, !!reveal),
+        deleteOffline: (id: number) => offline.remove(id),
         tags: () =>
             (
                 sqlite
                     .prepare(
-                        "SELECT DISTINCT value FROM items,json_each(items.tags) WHERE json_each.type='text' ORDER BY value COLLATE NOCASE"
+                        "SELECT DISTINCT value FROM items,json_each(items.tags) WHERE items.tags <> '[]' AND json_each.type='text' ORDER BY value COLLATE NOCASE"
                     )
                     .all() as { value: string }[]
             ).map(row => row.value),
@@ -207,79 +200,61 @@ export function initPersonal(
             target: { sids: number[] } | { gid: number },
             patch: Partial<SourcePreferences>,
             clear: (keyof SourcePreferences)[] = []
-        ) => {
-            const valid = validateSourcePreferences(patch)
-            if (
-                !Array.isArray(clear) ||
-                clear.some(key => !(key in defaultSourcePreferences))
-            )
-                throw new Error("Invalid preference reset.")
-            const stored = preferences()
-            const next: PreferenceOverrides = {
-                sources: { ...stored.sources },
-                groups: { ...stored.groups },
-            }
-            const sids = "sids" in target ? target.sids : null
-            if (
-                sids &&
-                (!Array.isArray(sids) || !sids.length || sids.length > 1000)
-            )
-                throw new Error("Invalid source selection.")
-            const ids = sids || [target["gid"]]
-            const map = sids ? next.sources : next.groups
-            for (const id of ids) {
-                if (
-                    !Number.isSafeInteger(id) ||
-                    (sids
-                        ? !sqlite
-                              .prepare("SELECT sid FROM sources WHERE sid=?")
-                              .get(id)
-                        : !store
-                              .get("sourceGroups", [])
-                              .some(
-                                  group => group.gid === id && group.isMultiple
-                              ))
-                )
-                    throw new Error(
-                        "The selected subscription or group no longer exists."
-                    )
-                const values = { ...map[id], ...valid }
-                for (const key of clear) delete values[key]
-                map[id] = values
-            }
-            store.set("sourcePreferences", next)
-            changed()
-            return next
-        },
+        ) => prefStore.savePreferences(target, patch, clear),
         afterInsert: async (ids: number[]) => {
             if (
                 !Array.isArray(ids) ||
                 ids.length > 10000 ||
                 ids.some(id => !Number.isSafeInteger(id))
             )
-                throw new Error("Invalid article list.")
+                throw new Error("新文章列表数据无效，请刷新重试。")
             await archive.afterInsert(ids)
+            const getItemStmt = sqlite.prepare(
+                "SELECT source,saveRequested FROM items WHERE _id=?"
+            )
             for (const id of ids) {
-                const item = sqlite
-                    .prepare(
-                        "SELECT source,saveRequested FROM items WHERE _id=?"
-                    )
-                    .get(id) as { source: number; saveRequested: number }
-                if (!item) continue
-                const prefs = sourcePreferences(item.source)
-                ai.auto(id)
-                if (prefs.autoFullText && prefs.fetchMode !== "off")
-                    void fullText.get(id).catch(() => {})
-                if (
-                    prefs.offlineEnabled &&
-                    (prefs.autoOffline || item.saveRequested)
-                )
-                    void offline.save(id).catch(() => {})
+                try {
+                    const item = getItemStmt.get(id) as
+                        | { source: number; saveRequested: number }
+                        | undefined
+                    if (!item) continue
+                    const prefs = sourcePreferences(item.source)
+                    const willFetchFull =
+                        prefs.autoFullText && prefs.fetchMode !== "off"
+                    ai.auto(id, { skipSummary: willFetchFull })
+                    if (willFetchFull) {
+                        void fullText
+                            .get(id)
+                            .catch(err => {
+                                console.warn(
+                                    `Auto full-text failed for item ${id}:`,
+                                    err
+                                )
+                                changed()
+                            })
+                            .finally(() => {
+                                ai.auto(id, { skipTitle: true })
+                            })
+                    }
+                    if (
+                        prefs.offlineEnabled &&
+                        (prefs.autoOffline || item.saveRequested)
+                    ) {
+                        void offline.save(id).catch(err => {
+                            console.warn(
+                                `Auto offline save failed for item ${id}:`,
+                                err
+                            )
+                        })
+                    }
+                } catch (err) {
+                    console.warn(`afterInsert hook warning for ${id}:`, err)
+                }
             }
             return true
         },
         notifyItem: (id: number) => {
-            if (!Number.isSafeInteger(id)) throw new Error("Invalid article.")
+            if (!Number.isSafeInteger(id)) throw new Error("无效的文章。")
             const item = sqlite
                 .prepare(
                     "SELECT i.title,s.name FROM items i JOIN sources s ON s.sid=i.source WHERE i._id=?"
@@ -291,7 +266,12 @@ export function initPersonal(
                 body: item.name,
             })
             notice.on("click", () => {
-                if (manager.hasWindow()) {
+                if (
+                    manager.hasWindow() &&
+                    !manager.mainWindow.webContents.isDestroyed()
+                ) {
+                    if (manager.mainWindow.isMinimized())
+                        manager.mainWindow.restore()
                     manager.mainWindow.show()
                     manager.mainWindow.focus()
                     manager.mainWindow.webContents.send(
@@ -304,56 +284,8 @@ export function initPersonal(
             return true
         },
         settings: () => settings(),
-        saveSettings: (value: PersonalSettings) => {
-            if (
-                !value ||
-                !Array.isArray(value.siteRules) ||
-                value.siteRules.length > 200
-            )
-                throw new Error("Invalid settings.")
-            const next: PersonalSettings = {
-                domainInterval: Number(value.domainInterval),
-                concurrency: Number(value.concurrency),
-                backupFolder: String(value.backupFolder || ""),
-                backupSchedule: value.backupSchedule,
-                backupKeep: Number(value.backupKeep),
-                lastBackup: settings().lastBackup,
-                offlineFolder: String(value.offlineFolder || ""),
-                removeLaterOnRead: !!value.removeLaterOnRead,
-                rssHub: httpURL(
-                    value.rssHub || defaultPersonalSettings.rssHub
-                ).href.replace(/\/$/, ""),
-                staleDays: Number(value.staleDays),
-                siteRules: value.siteRules.map(rule => ({
-                    host: httpURL("https://" + rule.host).hostname,
-                    container: String(rule.container || "").slice(0, 2000),
-                    remove: String(rule.remove || "").slice(0, 2000),
-                    mode: rule.mode,
-                })),
-            }
-            if (
-                !Number.isFinite(next.domainInterval) ||
-                next.domainInterval < 0 ||
-                next.domainInterval > 3600 ||
-                !Number.isInteger(next.concurrency) ||
-                next.concurrency < 1 ||
-                next.concurrency > 8 ||
-                !Number.isInteger(next.backupKeep) ||
-                !Number.isInteger(next.staleDays) ||
-                next.staleDays < 1 ||
-                next.staleDays > 3650 ||
-                next.backupKeep < 1 ||
-                next.backupKeep > 100 ||
-                !["off", "daily", "weekly"].includes(next.backupSchedule) ||
-                next.siteRules.some(
-                    rule => !["direct", "rendered", "off"].includes(rule.mode)
-                )
-            )
-                throw new Error("Settings are outside the supported range.")
-            store.set("personal", next)
-            changed()
-            return next
-        },
+        saveSettings: (value: PersonalSettings) =>
+            prefStore.saveSettings(value),
         chooseFolder: async () => {
             const choice = await dialog.showOpenDialog({
                 properties: ["openDirectory", "createDirectory"],
@@ -361,16 +293,28 @@ export function initPersonal(
             return choice.canceled ? null : choice.filePaths[0]
         },
         status: () => ({
-            index: index.progress,
-            tasks: queue.snapshot(),
+            index: {
+                ...index.progress,
+                error: formatErr(index.progress.error),
+            },
+            tasks: queue.snapshot().map(t => ({
+                ...t,
+                error: formatErr(t.error),
+            })),
+            queueSummary: queue.summary(),
             backupRunning: backups.running,
-            backupError: backups.error,
-            offline: offline.snapshot(),
+            backupError: formatErr(backups.error),
+            backupWarning: formatErr(backups.warning),
+            aiError: formatErr(ai.error),
+            offline: offline.snapshot().map(t => ({
+                ...t,
+                error: formatErr(t.error),
+            })),
         }),
         search: (query: string, offset: number) =>
             index.search(String(query), offset),
         rebuildIndex: () => {
-            index.start()
+            index.start(true)
             return true
         },
         backup: () => backups.create(),
@@ -385,68 +329,18 @@ export function initPersonal(
                 !Number.isSafeInteger(id) ||
                 (mode && !["direct", "rendered"].includes(mode))
             )
-                throw new Error("Invalid article request.")
+                throw new Error("无效的全文抓取请求。")
             const collectionOverride =
                 !!collectionKey(collection || "") &&
                 store.get("readingPreferences")?.collections?.[collection]
                     ?.openTarget === 3
             return fullText.get(id, !!force, mode, collectionOverride)
         },
-        accounts: async () => {
-            const cookies = await session
-                .fromPartition(WEB_PARTITION)
-                .cookies.get({})
-            const counts = new Map<string, number>()
-            cookies.forEach(cookie => {
-                const host = cookie.domain.replace(/^\./, "")
-                counts.set(host, (counts.get(host) || 0) + 1)
-            })
-            return [...counts]
-                .map(([host, count]) => ({ host, count }))
-                .sort((a, b) => a.host.localeCompare(b.host))
-        },
-        clearAccount: async (host: string) => {
-            const target = httpURL("https://" + host).hostname
-            const web = session.fromPartition(WEB_PARTITION)
-            const cookies = await web.cookies.get({})
-            for (const cookie of cookies.filter(
-                c => c.domain.replace(/^\./, "") === target
-            )) {
-                await web.cookies.remove(
-                    `${cookie.secure ? "https" : "http"}://${target}${
-                        cookie.path
-                    }`,
-                    cookie.name
-                )
-            }
-            for (const protocol of ["https:", "http:"])
-                await web.clearStorageData({
-                    origin: `${protocol}//${target}`,
-                    storages: [
-                        "localstorage",
-                        "indexdb",
-                        "serviceworkers",
-                        "cachestorage",
-                    ],
-                })
-            await web.cookies.flushStore()
-            return true
-        },
-        login: async (address: string) => {
-            const url = httpURL(
-                address.includes("://") ? address : "https://" + address
-            )
-            const win = secureWebWindow(true)
-            win.on("closed", () => {
-                void session
-                    .fromPartition(WEB_PARTITION)
-                    .cookies.flushStore()
-                    .catch(() => {})
-            })
-            await win.loadURL(url.origin)
-            return true
-        },
+        accounts: () => listWebAccounts(),
+        clearAccount: (host: string) => clearWebAccount(host),
+        login: (address: string) => openWebLoginWindow(address),
     }
+
     for (const [name, handler] of Object.entries(handlers)) {
         ipcMain.handle("personal:" + name, async (event, ...args) => {
             if (
@@ -463,14 +357,16 @@ export function initPersonal(
                     ),
                 }
             } catch (error) {
-                return { ok: false, error: String(error).slice(0, 1000) }
+                const raw =
+                    error instanceof Error ? error.message : String(error)
+                const msg = humanizePersonalError(raw, getLocale())
+                return { ok: false, error: msg.slice(0, 1000) }
             }
         })
     }
+
     app.whenReady().then(() => {
-        const web = session.fromPartition(WEB_PARTITION)
-        web.setPermissionRequestHandler((_, __, callback) => callback(false))
-        web.setPermissionCheckHandler(() => false)
+        lockWebPartitionPermissions()
         index.start()
         void backups.scheduled()
         void ai.scheduled()
@@ -482,6 +378,22 @@ export function initPersonal(
         app.once("will-quit", () => {
             clearInterval(timer)
             index.stop()
+            archive.close()
         })
     })
+
+    return {
+        resetAfterImport: () => {
+            try {
+                prefStore.ensureInitialSourcePreferences()
+                archive.syncLegacyTopics()
+                prefStore.migrateLegacyFolderReadingPreferences()
+                offline.clearTasks()
+                index.start(true)
+                changed()
+            } catch (err) {
+                console.warn("Personal state reset warning:", err)
+            }
+        },
+    }
 }

@@ -15,8 +15,10 @@ export const defaultReadingPreferences: ReadingPreferences = {
 export function collectionKey(key: string) {
     return key === "later:" ||
         /^s-\d+$/.test(key) ||
+        /^g-\d+$/.test(key) ||
         key === "starred:" ||
         key.startsWith("folder:") ||
+        key.startsWith("tag:") ||
         key === "library:"
         ? key
         : ""

@@ -7,12 +7,11 @@ import {
     useEffect,
 } from "react"
 import intl from "react-intl-universal"
-import { Icon } from "@fluentui/react"
+import { Icon, useTheme } from "@fluentui/react"
 import { useAppDispatch, useAppSelector } from "../scripts/reducer"
 import { saveReadingPreferences } from "../scripts/models/reading"
 import { FlatButton } from "./utils/FlatButton"
 import { makeStyles, mergeClasses } from "@griffel/react"
-import { useTheme } from "@fluentui/react"
 import {
     LIST_ARTICLE_MIN_WIDTH,
     LIST_VIEW_MIN_WIDTH,
@@ -30,42 +29,30 @@ const useStyles = makeStyles({
         display: "flex",
         height: "calc(100% - var(--selectionHeight, 0px))",
         position: "relative",
-        // Keep the resize handle and drag shield below the navigation menu.
         isolation: "isolate",
         marginTop: "calc(-1 * var(--navHeight))",
         marginLeft: 0,
-        transition: "margin-left var(--transition-timing) 0.367s",
-        // Focus must not scroll the layout when decorative shadows overflow it.
+        transition: "margin-left var(--transition-timing) 0.32s",
         overflow: "clip",
         backgroundColor: "var(--colorNeutralBackground1)",
     },
     menuOpen: {
-        "@media (min-width: 1440px)": {
-            marginLeft: "280px",
+        "@media (min-width: 1280px)": {
+            marginLeft: "var(--sidebarWidth, 276px)",
         },
     },
     listPane: {
-        "width": "var(--list-view-width)",
-        "minWidth": `${LIST_VIEW_MIN_WIDTH}px`,
-        "flexShrink": 0,
-        "backgroundColor": "var(--neutralLighterAlt)",
-        "height": "100%",
-        "position": "relative",
-        "display": "flex",
-        "flexDirection": "column",
-        "paddingTop": "var(--navHeight)",
-        "boxSizing": "border-box",
-        "::after": {
-            content: '""',
-            display: "block",
-            pointerEvents: "none",
-            position: "absolute",
-            top: "-10%",
-            right: 0,
-            width: "120%",
-            height: "120%",
-            boxShadow: "inset 5px 0 25px #0004",
-        },
+        width: "var(--list-view-width)",
+        minWidth: `${LIST_VIEW_MIN_WIDTH}px`,
+        flexShrink: 0,
+        backgroundColor: "var(--neutralLighterAlt)",
+        borderRight: "1px solid var(--neutralQuaternaryAlt)",
+        height: "100%",
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        paddingTop: "var(--navHeight)",
+        boxSizing: "border-box",
     },
     articlePane: {
         flexGrow: 1,
@@ -107,8 +94,9 @@ const useStyles = makeStyles({
     },
     logo: {
         display: "block",
-        width: "120px",
-        height: "120px",
+        width: "110px",
+        height: "110px",
+        opacity: 0.55,
         userSelect: "none",
     },
     rail: {
@@ -121,10 +109,13 @@ const useStyles = makeStyles({
     railButton: { width: "28px", height: "64px" },
     listControl: {
         width: "100%",
+        height: "32px",
+        lineHeight: "32px",
         textAlign: "right",
         paddingRight: "12px",
         flexShrink: 0,
         fontSize: "12px",
+        color: "var(--neutralSecondary)",
     },
     floating: {
         position: "absolute",
@@ -156,6 +147,7 @@ export function ListView({
     const interaction = useRef({ menu: false, inside: false })
     interaction.current.menu = menuActive
     const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+
     const reveal = () => {
         clearTimeout(hoverTimer.current)
         hoverTimer.current = setTimeout(() => setPeek(true), 140)
@@ -167,22 +159,29 @@ export function ListView({
                 setPeek(false)
         }, 260)
     }
+
     useEffect(() => {
         if (menuActive) clearTimeout(hoverTimer.current)
         else if (!interaction.current.inside) conceal()
     }, [menuActive])
+
     useEffect(() => () => clearTimeout(hoverTimer.current), [])
+
     const container = useRef<HTMLDivElement>(null)
     const [availableWidth, setAvailableWidth] = useState(0)
     const { requestedWidth, handleProps } = useResizableWidth({
         getWidth: window.settings.getListViewWidth,
         saveWidth: window.settings.setListViewWidth,
         minWidth: LIST_VIEW_MIN_WIDTH,
-        maxWidth: availableWidth - LIST_ARTICLE_MIN_WIDTH,
+        maxWidth: Math.max(
+            LIST_VIEW_MIN_WIDTH,
+            availableWidth - LIST_ARTICLE_MIN_WIDTH
+        ),
     })
 
     useLayoutEffect(() => {
         const node = container.current
+        if (!node) return
         setAvailableWidth(node.clientWidth)
         const observer = new ResizeObserver(() =>
             setAvailableWidth(node.clientWidth)
@@ -277,7 +276,7 @@ export function ListView({
                     />
                 </div>
                 <ResizeHandle
-                    label="Resize article list"
+                    label="调整文章列表宽度"
                     cursor="col-resize"
                     {...handleProps}
                     styleClass={classes.resizeHandle}

@@ -7,6 +7,7 @@ import {
     DefaultButton,
     SearchBox,
     MessageBar,
+    MessageBarType,
     ProgressIndicator,
 } from "@fluentui/react"
 import { makeStyles } from "@griffel/react"
@@ -23,14 +24,15 @@ const useStyles = makeStyles({
         display: "flex",
         flexDirection: "column",
         gap: "12px",
-        maxHeight: "55vh",
+        maxHeight: "56vh",
         overflowY: "auto",
-        marginTop: "16px",
+        marginTop: "14px",
+        paddingRight: "4px",
     },
     hit: {
         display: "flex",
         flexDirection: "column",
-        gap: "5px",
+        gap: "4px",
         borderBottom: "1px solid var(--neutralQuaternaryAlt)",
         paddingBottom: "12px",
     },
@@ -38,13 +40,38 @@ const useStyles = makeStyles({
         textAlign: "left",
         justifyContent: "flex-start",
         height: "auto",
-        padding: "4px 0",
+        padding: "4px 6px",
         whiteSpace: "normal",
+        fontWeight: 600,
     },
-    excerpt: { margin: 0, lineHeight: "1.6", userSelect: "text" },
+    sourceMeta: {
+        color: "var(--neutralSecondary)",
+        paddingLeft: "6px",
+    },
+    excerpt: {
+        margin: 0,
+        paddingLeft: "6px",
+        lineHeight: "1.65",
+        userSelect: "text",
+        color: "var(--neutralPrimaryAlt)",
+    },
+    mark: {
+        backgroundColor: "rgba(252, 225, 0, 0.35)",
+        color: "inherit",
+        borderRadius: "2px",
+        padding: "0 2px",
+    },
 })
 
-function Highlight({ text, query }: { text: string; query: string }) {
+function Highlight({
+    text,
+    query,
+    markClass,
+}: {
+    text: string
+    query: string
+    markClass: string
+}) {
     const words = query
         .trim()
         .split(/\s+/u)
@@ -61,11 +88,15 @@ function Highlight({ text, query }: { text: string; query: string }) {
     )
     return (
         <>
-            {text
-                .split(regex)
-                .map((part, index) =>
-                    index % 2 ? <mark key={index}>{part}</mark> : part
-                )}
+            {text.split(regex).map((part, index) =>
+                index % 2 ? (
+                    <mark key={index} className={markClass}>
+                        {part}
+                    </mark>
+                ) : (
+                    part
+                )
+            )}
         </>
     )
 }
@@ -81,6 +112,7 @@ export default function FullSearch() {
     const [busy, setBusy] = useState(false)
     const [more, setMore] = useState(false)
     const generation = useRef(0)
+
     useEffect(() => {
         const show = () => setOpen(true)
         const key = (event: KeyboardEvent) => {
@@ -100,20 +132,29 @@ export default function FullSearch() {
             window.removeEventListener("keydown", key)
         }
     }, [])
+
     useEffect(() => {
         if (!open) return
         const update = () =>
             window.personal
                 .status()
                 .then(status => setIndex(status.index))
-                .catch(error => setError(String(error)))
+                .catch(err => setError(String(err)))
         void update()
-        const timer = setInterval(update, 1000)
+        const timer = setInterval(update, 1200)
         return () => clearInterval(timer)
     }, [open])
+
     useEffect(() => {
         const current = ++generation.current
         if (!open) return
+        if (!query.trim()) {
+            setHits([])
+            setMore(false)
+            setBusy(false)
+            setError("")
+            return
+        }
         setBusy(true)
         const timer = setTimeout(() => {
             window.personal
@@ -124,15 +165,16 @@ export default function FullSearch() {
                     setMore(result.length === 50)
                     setError("")
                 })
-                .catch(error => {
-                    if (current === generation.current) setError(String(error))
+                .catch(err => {
+                    if (current === generation.current) setError(String(err))
                 })
                 .finally(() => {
                     if (current === generation.current) setBusy(false)
                 })
-        }, 180)
+        }, 160)
         return () => clearTimeout(timer)
     }, [query, open])
+
     async function loadMore() {
         const current = generation.current
         setBusy(true)
@@ -142,12 +184,13 @@ export default function FullSearch() {
                 setHits([...hits, ...result])
                 setMore(result.length === 50)
             }
-        } catch (error) {
-            setError(String(error))
+        } catch (err) {
+            setError(String(err))
         } finally {
             setBusy(false)
         }
     }
+
     async function openArticle(id: number) {
         try {
             const [row] = await database
@@ -164,21 +207,31 @@ export default function FullSearch() {
             await dispatch(markRead(item))
             dispatch(showItem("PERSONAL_SEARCH", { ...item, hasRead: true }))
             setOpen(false)
-        } catch (error) {
-            setError(String(error))
+        } catch (err) {
+            setError(String(err))
         }
     }
+
     return (
         <Dialog
             hidden={!open}
             onDismiss={() => setOpen(false)}
-            minWidth={700}
+            minWidth={680}
             maxWidth={800}
             dialogContentProps={{
                 type: DialogType.close,
                 title: intl.get("personal.search"),
+                closeButtonAriaLabel: intl.get("close"),
             }}
-            modalProps={{ isBlocking: false }}>
+            modalProps={{
+                isBlocking: false,
+                styles: {
+                    main: {
+                        minWidth: "min(680px, calc(100vw - 24px))",
+                        maxWidth: "min(800px, calc(100vw - 24px))",
+                    },
+                },
+            }}>
             <SearchBox
                 autoFocus
                 ariaLabel={intl.get("personal.search")}
@@ -204,24 +257,36 @@ export default function FullSearch() {
                 />
             )}
             {(error || index?.error) && (
-                <MessageBar>
-                    {intl.get("personal.failed")} {error || index.error}
+                <MessageBar messageBarType={MessageBarType.error}>
+                    {intl.get("personal.failed")} {error || index?.error}
                 </MessageBar>
             )}
             <div className={classes.results}>
-                {!busy && query && !hits.length && (
-                    <p>{intl.get("personal.noResults")}</p>
+                {!busy && query.trim() && !hits.length && (
+                    <p style={{ color: "var(--neutralSecondary)" }}>
+                        {intl.get("personal.noResults")}
+                    </p>
                 )}
                 {hits.map(hit => (
                     <div className={classes.hit} key={hit.id}>
                         <DefaultButton
                             className={classes.title}
                             onClick={() => void openArticle(hit.id)}>
-                            <Highlight text={hit.title} query={query} />
+                            <Highlight
+                                text={hit.title}
+                                query={query}
+                                markClass={classes.mark}
+                            />
                         </DefaultButton>
-                        <small>{hit.source}</small>
+                        <small className={classes.sourceMeta}>
+                            {hit.source}
+                        </small>
                         <p className={classes.excerpt}>
-                            <Highlight text={hit.excerpt} query={query} />
+                            <Highlight
+                                text={hit.excerpt}
+                                query={query}
+                                markClass={classes.mark}
+                            />
                         </p>
                     </div>
                 ))}

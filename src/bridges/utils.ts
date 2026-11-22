@@ -4,7 +4,6 @@ import {
     TouchBarTexts,
     WindowStateListenerType,
 } from "../schema-types"
-import { IObjectWithKey } from "@fluentui/react"
 
 const utilsBridge = {
     platform: process.platform,
@@ -78,7 +77,6 @@ const utilsBridge = {
     addWebviewContextListener: (
         callback: (pos: [number, number], text: string, url: string) => any
     ) => {
-        ipcRenderer.removeAllListeners("webview-context-menu")
         const listener = (_, pos, text, url) => {
             callback(pos, text, url)
         }
@@ -92,7 +90,6 @@ const utilsBridge = {
     },
 
     addWebviewKeydownListener: (callback: (event: Electron.Input) => any) => {
-        ipcRenderer.removeAllListeners("webview-keydown")
         const listener = (_, input) => {
             callback(input)
         }
@@ -103,7 +100,6 @@ const utilsBridge = {
     },
 
     addWebviewErrorListener: (callback: (reason: string) => any) => {
-        ipcRenderer.removeAllListeners("webview-error")
         const listener = (_, reason) => {
             callback(reason)
         }

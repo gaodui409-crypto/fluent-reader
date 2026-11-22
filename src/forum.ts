@@ -49,6 +49,6 @@ export function forumBody(document: Document, address: string): string | null {
     throw new Error(
         n === 1
             ? "未找到主题主楼。请在内置网页查看原帖或登录后重试；已保存的正文仍可阅读。"
-            : `未找到第 ${n} 楼，请打开原帖查看。不会用主楼或其他回复替代。`
+            : `当前页面未加载到第 ${n} 楼（为防看串，未用主楼或其他楼层替代），请点击「加载网页」或在浏览器中查看原帖。`
     )
 }

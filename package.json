@@ -8,6 +8,7 @@
     "electron": "electron ./dist/electron.js",
     "start": "npm run build && npm run electron",
     "format": "prettier --write --list-different .",
+    "test:unit": "node tests/personal-unit.cjs",
     "drizzle:generate": "drizzle-kit generate",
     "update:mercury": "node build/update-mercury.js",
     "postinstall": "install-electron",

@@ -42,9 +42,27 @@ export function ReadingControls() {
                     selectedKey={collections[key]?.openTarget ?? "inherit"}
                     styles={{
                         root: {
-                            width: 132,
+                            width: 112,
                             display: "inline-block",
                             verticalAlign: "top",
+                        },
+                        title: {
+                            border: "none",
+                            background: "transparent",
+                            height: "var(--navHeight)",
+                            lineHeight: "var(--navHeight)",
+                            padding: "0 22px 0 8px",
+                            fontSize: 12,
+                            color: "var(--black)",
+                        },
+                        caretDownWrapper: {
+                            height: "var(--navHeight)",
+                            lineHeight: "var(--navHeight)",
+                            right: 6,
+                        },
+                        caretDown: {
+                            fontSize: 10,
+                            color: "var(--neutralSecondary)",
                         },
                     }}
                     options={[

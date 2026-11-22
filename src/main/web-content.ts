@@ -24,6 +24,18 @@ export function htmlText(html: string): string {
     return document.body.textContent.replace(/\s+/g, " ").trim()
 }
 
+export function validateCssSelector(selector: string, label: string) {
+    const trimmed = String(selector || "").trim()
+    if (!trimmed) return ""
+    try {
+        const { document } = parseHTML("<html><body><div></div></body></html>")
+        document.querySelectorAll(trimmed)
+        return trimmed
+    } catch {
+        throw new Error(`${label}格式有误，请检查 CSS 选择器写法。`)
+    }
+}
+
 export function cleanHTML(html: string, url: string): string {
     return sanitizeHtml(html, {
         allowedTags: sanitizeHtml.defaults.allowedTags.concat([
@@ -137,7 +149,9 @@ export async function renderedPage<T>(
             Date.now() < deadline
         )
             await wait(150)
-        if (win.isDestroyed()) throw new Error("Page loading timed out.")
+        clearTimeout(timeout)
+        if (win.isDestroyed() || win.webContents.isDestroyed())
+            throw new Error("页面加载超时。")
         return await consume(win)
     } finally {
         clearTimeout(timeout)
@@ -160,7 +174,8 @@ export async function responseHTML(
         !/html|xml|text/i.test(type) &&
         !(allowJSON && /\bjson\b/i.test(type))
     )
-        throw new Error("The address did not return a web page.")
+        throw new Error("该网址返回的不是网页或文本内容。")
+    if (!response.body) return ""
     const reader = response.body.getReader()
     const chunks: Uint8Array[] = []
     let size = 0
@@ -170,7 +185,7 @@ export async function responseHTML(
         size += value.byteLength
         if (size > 16 * 1024 * 1024) {
             await reader.cancel()
-            throw new Error("Page exceeds the 16 MB limit.")
+            throw new Error("网页内容超过 16 MB 上限。")
         }
         chunks.push(value)
     }
@@ -200,47 +215,63 @@ export async function extractArticle(
             img.getAttribute("data-src") || img.getAttribute("data-original")
         if (lazy) img.setAttribute("src", lazy)
     })
-    if (rule?.remove)
-        document.querySelectorAll(rule.remove).forEach(el => el.remove())
+    if (rule?.remove) {
+        try {
+            document.querySelectorAll(rule.remove).forEach(el => el.remove())
+        } catch {
+            throw new Error("网站提取规则的移除元素选择器语法有误。")
+        }
+    }
     const base = document.createElement("base")
     base.href = url
     document.head.prepend(base)
     let content = ""
     if (rule?.container) {
-        const container = document.querySelector(rule.container)
+        let container: Element | null = null
+        try {
+            container = document.querySelector(rule.container)
+        } catch {
+            throw new Error("网站提取规则的正文区域选择器语法有误。")
+        }
         if (!container)
             throw new Error(
-                "The configured article selector did not match this page."
+                "未在页面中找到匹配该站正文区域规则的内容，请检查 CSS 选择器或登录状态。"
             )
         content = container.innerHTML
-    } else if (forumBody(document as unknown as Document, url) !== null) {
-        content = forumBody(document as unknown as Document, url)
     } else {
-        try {
-            content =
-                (
-                    await Mercury.parse(url, {
-                        html: document.toString(),
-                        fetchAllPages: false,
-                    })
-                ).content || ""
-        } catch {
-            /* Readability fallback below. */
-        }
-        if (htmlText(content).length < 100) {
-            const readable = new Readability(document as unknown as Document, {
-                charThreshold: 0,
-            }).parse()
-            if (
-                readable?.content &&
-                htmlText(readable.content).length > htmlText(content).length
-            )
-                content = readable.content
+        const forum = forumBody(document as unknown as Document, url)
+        if (forum !== null) {
+            content = forum
+        } else {
+            try {
+                content =
+                    (
+                        await Mercury.parse(url, {
+                            html: document.toString(),
+                            fetchAllPages: false,
+                        })
+                    ).content || ""
+            } catch {
+                /* Readability fallback below. */
+            }
+            if (htmlText(content).length < 100) {
+                const readable = new Readability(
+                    document as unknown as Document,
+                    {
+                        charThreshold: 0,
+                    }
+                ).parse()
+                if (
+                    readable?.content &&
+                    htmlText(readable.content).length > htmlText(content).length
+                )
+                    content = readable.content
+            }
         }
     }
     if (!htmlText(content))
         throw new Error(
-            "No article body found. Try rendered extraction or a site selector; the site may require login."
+            "未能提取出正文内容。可尝试改用「网页渲染后提取」、配置正文区域规则，或先登录该网站。"
         )
     return cleanHTML(content, url)
 }
@@ -251,7 +282,8 @@ export class FullText {
         private sqlite: Database.Database,
         private queue: DomainQueue,
         private settings: () => PersonalSettings,
-        private sourcePreferences?: (sid: number) => SourcePreferences
+        private sourcePreferences?: (sid: number) => SourcePreferences,
+        private updated?: () => void
     ) {}
 
     async get(
@@ -276,7 +308,7 @@ export class FullText {
         const item = this.sqlite
             .prepare("SELECT link,source FROM items WHERE _id=?")
             .get(id) as { link: string; source: number }
-        if (!item) throw new Error("The article no longer exists.")
+        if (!item) throw new Error("文章已不存在。")
         const preferences = this.sourcePreferences?.(item.source)
         if (preferences?.fetchMode === "off" && !collectionOverride)
             throw new Error(
@@ -287,7 +319,7 @@ export class FullText {
             rule => rule.host.toLowerCase() === url.hostname.toLowerCase()
         )
         if (rule?.mode === "off")
-            throw new Error("Full text fetching is disabled for this site.")
+            throw new Error("该网站已在提取规则中关闭全文抓取。")
         const promise = this.queue.add(url.href, "fullText", async () => {
             const rendered =
                 (mode || rule?.mode || preferences?.fetchMode) === "rendered"
@@ -307,12 +339,17 @@ export class FullText {
                   )
             const html = await extractArticle(raw, url.href, rule)
             const fetchedAt = Date.now()
-            this.sqlite
-                .prepare(
-                    `INSERT INTO article_content(itemId,fullHtml,fullText,fullFetchedAt) VALUES(?,?,?,?)
-                ON CONFLICT(itemId) DO UPDATE SET fullHtml=excluded.fullHtml,fullText=excluded.fullText,fullFetchedAt=excluded.fullFetchedAt`
-                )
-                .run(id, html, htmlText(html), fetchedAt)
+            if (
+                this.sqlite.prepare("SELECT 1 FROM items WHERE _id=?").get(id)
+            ) {
+                this.sqlite
+                    .prepare(
+                        `INSERT INTO article_content(itemId,fullHtml,fullText,fullFetchedAt) VALUES(?,?,?,?)
+                    ON CONFLICT(itemId) DO UPDATE SET fullHtml=excluded.fullHtml,fullText=excluded.fullText,fullFetchedAt=excluded.fullFetchedAt`
+                    )
+                    .run(id, html, htmlText(html), fetchedAt)
+            }
+            this.updated?.()
             return { html, fetchedAt, cached: false }
         })
         this.pending.set(id, promise)

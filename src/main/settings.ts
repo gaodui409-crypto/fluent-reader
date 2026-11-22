@@ -1,5 +1,7 @@
 import Store from "electron-store"
+import { humanizePersonalError } from "./error-messages"
 import {
+    collectionKey,
     defaultReadingPreferences,
     ReadingPreferences,
 } from "../reading-preferences"
@@ -32,7 +34,7 @@ try {
     app.whenReady().then(() =>
         dialog.showErrorBox(
             app.getLocale().startsWith("zh")
-                ? "备份恢复未完成，已保留原有数据。"
+                ? "备份恢复未完成，已保留原有数据"
                 : "Backup restore failed. Existing data has been preserved.",
             String(error)
         )
@@ -48,22 +50,23 @@ ipcMain.on("get-reading-preferences", event => {
 })
 ipcMain.handle("set-reading-preferences", (_, value: ReadingPreferences) => {
     const collections: ReadingPreferences["collections"] = {}
-    for (const key of ["later:", "starred:"]) {
-        const pref = value.collections?.[key]
-        if (!pref) continue
-        collections[key] = {
-            view:
-                Number.isInteger(pref.view) && pref.view >= 0 && pref.view <= 3
-                    ? pref.view
-                    : undefined,
-            openTarget: [0, 1, 3].includes(pref.openTarget)
-                ? pref.openTarget
-                : undefined,
+    for (const [rawKey, pref] of Object.entries(value?.collections || {})) {
+        const key = collectionKey(rawKey)
+        if (!key || !pref || typeof pref !== "object") continue
+        const view =
+            Number.isInteger(pref.view) && pref.view >= 0 && pref.view <= 3
+                ? pref.view
+                : undefined
+        const openTarget = [0, 1, 2, 3].includes(pref.openTarget)
+            ? pref.openTarget
+            : undefined
+        if (view !== undefined || openTarget !== undefined) {
+            collections[key] = { view, openTarget }
         }
     }
     store.set("readingPreferences", {
-        hoverSummary: !!value.hoverSummary,
-        collapseList: !!value.collapseList,
+        hoverSummary: !!value?.hoverSummary,
+        collapseList: !!value?.collapseList,
         collections,
     })
 })
@@ -228,15 +231,20 @@ ipcMain.handle("set-font", (_, font: string) => {
     store.set(FONT_STORE_KEY, font)
 })
 
-for (const [key, channel, minimum] of [
-    ["articleOverlayWidth", "article-overlay-width", ARTICLE_OVERLAY_MIN_WIDTH],
-    ["listViewWidth", "list-view-width", LIST_VIEW_MIN_WIDTH],
+for (const [key, channel, minimum, fallback] of [
+    [
+        "articleOverlayWidth",
+        "article-overlay-width",
+        ARTICLE_OVERLAY_MIN_WIDTH,
+        880,
+    ],
+    ["listViewWidth", "list-view-width", LIST_VIEW_MIN_WIDTH, 340],
 ] as const) {
     ipcMain.on(`get-${channel}`, event => {
-        const width = store.get(key, minimum)
+        const width = store.get(key, fallback)
         event.returnValue = Number.isFinite(width)
             ? Math.max(minimum, Math.round(width))
-            : minimum
+            : fallback
     })
     ipcMain.handle(`set-${channel}`, (_, width: number) => {
         if (Number.isFinite(width) && width >= minimum) {
@@ -275,10 +283,10 @@ ipcMain.on("get-service-configs", event => {
             () =>
                 dialog.showErrorBox(
                     zh
-                        ? "同步服务凭据需要重新输入"
+                        ? "需要重新填写同步服务账号"
                         : "Re-enter synchronization credentials",
                     zh
-                        ? "无法读取此系统账号加密的服务凭据。请在选项 → 服务中重新配置；订阅和文章已保留。\n" +
+                        ? "当前系统账号无法解密先前保存的同步服务密码，请在“选项 → 服务”中重新输入；本地订阅与文章均已保留。\n" +
                               String(error)
                         : String(error)
                 ),
@@ -291,7 +299,11 @@ ipcMain.handle("set-service-configs", (_, configs: ServiceConfigs) => {
         store.set(SERVICE_CONFIGS_STORE_KEY, protectServiceConfig(configs))
         return { ok: true }
     } catch (error) {
-        return { ok: false, error: String(error) }
+        const locale = store.get("locale", app.getLocale() || "zh-CN")
+        return {
+            ok: false,
+            error: humanizePersonalError(String(error), locale),
+        }
     }
 })
 

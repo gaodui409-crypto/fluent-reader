@@ -25,8 +25,10 @@ import type {
     AISettings,
     AIKind,
     AIResult,
+    AIArticleState,
     AIUsage,
     Briefing,
+    OfflineTask,
 } from "../personal-types"
 
 async function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
@@ -85,14 +87,18 @@ const personalBridge = {
     saveAI: (config: AIConfig, key?: string) =>
         invoke<AISettings>("saveAI", config, key),
     testAI: () => invoke<AIResult>("testAI"),
-    aiGenerate: (id: number, kind: AIKind) =>
-        invoke<AIResult>("aiGenerate", id, kind),
+    aiGenerate: (id: number, kind: AIKind, force = false) =>
+        invoke<AIResult>("aiGenerate", id, kind, force),
+    aiArticleState: (id: number) =>
+        invoke<AIArticleState>("aiArticleState", id),
     aiUsage: () => invoke<AIUsage>("aiUsage"),
     briefings: () => invoke<Briefing[]>("briefings"),
     createBriefing: () => invoke<Briefing>("createBriefing"),
+    deleteBriefing: (id: number) => invoke<boolean>("deleteBriefing", id),
     library: () =>
         invoke<{
             saved: number[]
+            offlineTasks?: Record<number, OfflineTask>
             removeLaterOnRead: boolean
             aiConfigured: boolean
             titles: Record<number, string>
@@ -100,6 +106,7 @@ const personalBridge = {
     saveOffline: (id: number) => invoke<string>("saveOffline", id),
     openOffline: (id: number, reveal = false) =>
         invoke<boolean>("openOffline", id, reveal),
+    deleteOffline: (id: number) => invoke<boolean>("deleteOffline", id),
     onChanged: (callback: () => void) => {
         const listener = () => callback()
         ipcRenderer.on("personal:changed", listener)

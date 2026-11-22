@@ -135,7 +135,7 @@ export function topicRSS(data: any, url: string, title: string): string {
                 const link = `${LINUXDO}/t/topic/${t.id}/1`
                 const content = `<p>${escapeXML(
                     t.excerpt || ""
-                )}</p><p>这是主题索引摘要。打开原帖或点击“抓取全文”阅读主楼。</p><p><a href="${link}">打开原帖</a></p>`
+                )}</p><p>以上为主题摘要，点击顶部「抓取全文」即可直接阅读主楼完整内容。</p><p><a href="${link}">打开原帖</a></p>`
                 const author = users.get(
                     t.posters?.find(p =>
                         /Original Poster/.test(p.description || "")
@@ -194,7 +194,7 @@ export function rankingRSS(
         (previous.hour === hour || previous.signature === signature)
     )
         return previous
-    const body = `<h2>热门主题</h2><p>排名按此订阅当前顺序；升降与上次保存的榜单比较。不是论坛账号等级。</p><ol>${rows
+    const body = `<h2>热门主题</h2><p>按热门源当前顺序排列，名次升降对比上一期本地榜单（注：数字为帖子热度排名，非论坛账号等级）。</p><ol>${rows
         .map((r, i) => {
             const old = previous?.links.indexOf(r.link) ?? -1
             const delta =
