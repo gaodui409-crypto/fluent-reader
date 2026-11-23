@@ -2,19 +2,31 @@ import type Database from "better-sqlite3"
 import type { Briefing, BriefingTopic } from "../personal-types"
 import { AIClient, stripCodeFenceJSON, sumTokens } from "./ai-client"
 
-interface BriefingCandidateRow {
+export interface BriefingCandidateRow {
     _id: number
+    source?: number
     title: string
     link: string
-    snippet: string
+    snippet?: string
+    excerpt?: string
 }
 
-function parseAndValidateBriefingBatch(
+function cleanOneLineSnippet(row: BriefingCandidateRow): string {
+    const raw = (row.excerpt || row.snippet || row.title || "")
+        .replace(/\s+/g, " ")
+        .trim()
+    return raw.slice(0, 200) || row.title
+}
+
+export function parseAndValidateBriefingBatch(
     text: string,
     batch: BriefingCandidateRow[]
 ): BriefingTopic[] {
     const parsed = stripCodeFenceJSON(text) as {
-        topics: { topic: string; entries: { id: number; summary: string }[] }[]
+        topics: {
+            topic: string
+            entries: { id: number | string; summary: string }[]
+        }[]
     }
     if (!Array.isArray(parsed?.topics))
         throw new Error("AI 返回的简报格式无法识别，请重试或更换模型。")
@@ -23,29 +35,55 @@ function parseAndValidateBriefingBatch(
     const topics: BriefingTopic[] = []
     for (const topic of parsed.topics) {
         if (
-            typeof topic?.topic !== "string" ||
+            !topic ||
+            typeof topic.topic !== "string" ||
             !topic.topic.trim() ||
             !Array.isArray(topic.entries)
-        )
-            throw new Error("AI 返回的简报主题结构无效，请重试。")
+        ) {
+            continue
+        }
         const name = topic.topic.trim().slice(0, 120)
         const entries: BriefingTopic["entries"] = []
         for (const entry of topic.entries) {
-            const row = entry ? batchById.get(entry.id) : undefined
-            if (!row || typeof entry.summary !== "string" || seen.has(entry.id))
-                throw new Error("AI 返回的简报条目不匹配，请重试。")
-            seen.add(entry.id)
+            const id =
+                typeof entry?.id === "number" ? entry.id : Number(entry?.id)
+            const row = Number.isSafeInteger(id) ? batchById.get(id) : undefined
+            if (!row || seen.has(row._id)) continue
+            const summary =
+                typeof entry?.summary === "string" && entry.summary.trim()
+                    ? entry.summary.trim().slice(0, 5000)
+                    : cleanOneLineSnippet(row)
+            seen.add(row._id)
             entries.push({
                 id: row._id,
                 title: row.title,
                 link: row.link,
-                summary: entry.summary.trim().slice(0, 5000),
+                summary,
             })
         }
         if (entries.length) topics.push({ topic: name, entries })
     }
-    if (seen.size !== batch.length)
-        throw new Error("AI 在汇总简报时漏掉了部分文章，请重试或更换模型。")
+    if (seen.size === 0) {
+        throw new Error("Briefing contained no valid unread articles.")
+    }
+    const omitted = batch.filter(row => !seen.has(row._id))
+    if (omitted.length > 0) {
+        const fallbackEntries = omitted.map(row => ({
+            id: row._id,
+            title: row.title,
+            link: row.link,
+            summary: cleanOneLineSnippet(row),
+        }))
+        const existingFallback = topics.find(t => t.topic === "其他未读动态")
+        if (existingFallback) {
+            existingFallback.entries.push(...fallbackEntries)
+        } else {
+            topics.push({
+                topic: "其他未读动态",
+                entries: fallbackEntries,
+            })
+        }
+    }
     return topics
 }
 
@@ -53,7 +91,13 @@ export class AIBriefingService {
     private briefingJob: Promise<Briefing> | null = null
     private scheduleAttempt = 0
 
-    constructor(private db: Database.Database, private client: AIClient) {}
+    constructor(
+        private db: Database.Database,
+        private client: AIClient,
+        private preferences: (sid: number) => { aiEnabled?: boolean } = () => ({
+            aiEnabled: true,
+        })
+    ) {}
 
     briefings(): Briefing[] {
         const rows = this.db
@@ -102,17 +146,42 @@ export class AIBriefingService {
         return this.briefingJob
     }
 
+    private isSourceEnabled(sid: number): boolean {
+        try {
+            return this.preferences(sid)?.aiEnabled !== false
+        } catch {
+            return true
+        }
+    }
+
     private async makeBrief(): Promise<Briefing> {
         const c = this.client.config()
-        if (!c.baseURL || !c.model)
+        const model = this.client.resolveModel(c, "briefing")
+        if (!c.baseURL || !model)
             throw new Error(
                 "请先前往「选项 → 自用功能 → AI 设置」填写接口基础地址与模型名。"
             )
-        const rows = this.db
-            .prepare(
-                "SELECT _id,title,link,snippet FROM items WHERE hasRead=0 AND hidden=0 AND date>=? ORDER BY date DESC"
-            )
-            .all(Date.now() - 86400000) as BriefingCandidateRow[]
+        const since = Date.now() - 86400000
+        const distinctSources = (
+            this.db
+                .prepare(
+                    "SELECT DISTINCT source FROM items WHERE hasRead=0 AND hidden=0 AND date>=?"
+                )
+                .all(since) as { source: number }[]
+        ).map(r => r.source)
+        const allowedSources = distinctSources.filter(sid =>
+            this.isSourceEnabled(sid)
+        )
+        const rows = allowedSources.length
+            ? (this.db
+                  .prepare(
+                      "SELECT _id,source,title,link,snippet FROM items WHERE hasRead=0 AND hidden=0 AND date>=? AND source IN (SELECT value FROM json_each(?)) ORDER BY date DESC LIMIT 120"
+                  )
+                  .all(
+                      since,
+                      JSON.stringify(allowedSources)
+                  ) as BriefingCandidateRow[])
+            : []
         if (!rows.length)
             throw new Error("过去 24 小时内没有未读文章可供生成简报。")
         const topics = new Map<string, BriefingTopic>()
@@ -124,12 +193,12 @@ export class AIBriefingService {
                 c,
                 null,
                 "briefing",
-                `Group the articles by topic and summarize each in ${c.targetLanguage}. Include every supplied id exactly once. Return JSON only: {"topics":[{"topic":"topic name","entries":[{"id":123,"summary":"short summary"}]}]}.`,
+                `Group the articles by topic and summarize each in ${c.targetLanguage}. Include every supplied id once. Return JSON only: {"topics":[{"topic":"topic name","entries":[{"id":123,"summary":"short summary"}]}]}.`,
                 JSON.stringify(
                     batch.map(row => ({
                         id: row._id,
                         title: row.title,
-                        text: row.snippet.slice(0, 1000),
+                        text: (row.snippet || "").slice(0, 1000),
                     }))
                 ),
                 text => {
@@ -168,6 +237,7 @@ export class AIBriefingService {
 
     async scheduled() {
         const c = this.client.config()
+        const model = this.client.resolveModel(c, "briefing")
         const now = new Date()
         const day = `${now.getFullYear()}-${
             now.getMonth() + 1
@@ -175,7 +245,7 @@ export class AIBriefingService {
         if (
             !c.dailyBriefing ||
             !c.baseURL ||
-            !c.model ||
+            !model ||
             now.getHours() < c.briefingHour ||
             c.lastBriefingDay === day ||
             Date.now() - this.scheduleAttempt < 3600000

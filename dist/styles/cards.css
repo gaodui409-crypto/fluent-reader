@@ -11,12 +11,14 @@
     width: 16px;
     height: 16px;
     margin-right: 5px;
+    flex-shrink: 0;
 }
 .info span.name {
     font-size: 12px;
     vertical-align: top;
     display: inline-block;
     flex-grow: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -41,6 +43,7 @@
     width: 16px;
     height: 16px;
     text-align: center;
+    flex-shrink: 0;
 }
 .read-indicator::after {
     content: "";
@@ -188,7 +191,7 @@
 
 .list-card {
     display: flex;
-    transition: box-shadow linear 0.08s;
+    transition: box-shadow linear 0.08s, background-color linear 0.08s;
     border-bottom: 1px solid var(--neutralQuaternaryAlt);
     box-shadow: #0000 0 5px 15px;
 }
@@ -240,12 +243,20 @@
     display: -webkit-box;
     -webkit-box-orient: vertical;
 }
+.list-card.selected {
+    background-color: rgba(0, 120, 212, 0.08);
+}
+:root[data-theme="dark"] .list-card.selected {
+    background-color: rgba(75, 160, 255, 0.14);
+}
 .list-card.selected::before {
     content: "";
     display: block;
     position: absolute;
+    left: 0;
+    top: 0;
     height: 100%;
-    border-left: 2px solid var(--primary);
+    border-left: 3px solid var(--primary);
 }
 .list-card.read,
 .list-card.read p.snippet {
@@ -347,6 +358,7 @@
 }
 .compact-card .info .name {
     flex-grow: 1;
+    min-width: 0;
 }
 .compact-card .info img,
 .compact-card .info .read-indicator,

@@ -3,6 +3,7 @@ import { humanizePersonalError } from "./error-messages"
 import {
     collectionKey,
     defaultReadingPreferences,
+    ReaderWidthMode,
     ReadingPreferences,
 } from "../reading-preferences"
 import {
@@ -64,9 +65,25 @@ ipcMain.handle("set-reading-preferences", (_, value: ReadingPreferences) => {
             collections[key] = { view, openTarget }
         }
     }
+    const readerWidth: ReaderWidthMode = [
+        "narrow",
+        "standard",
+        "wide",
+    ].includes(String(value?.readerWidth))
+        ? (value.readerWidth as ReaderWidthMode)
+        : "standard"
+    const lineHeight =
+        typeof value?.lineHeight === "number" &&
+        Number.isFinite(value.lineHeight) &&
+        value.lineHeight >= 1.4 &&
+        value.lineHeight <= 2.4
+            ? Math.round(value.lineHeight * 100) / 100
+            : 1.82
     store.set("readingPreferences", {
         hoverSummary: !!value?.hoverSummary,
         collapseList: !!value?.collapseList,
+        readerWidth,
+        lineHeight,
         collections,
     })
 })
@@ -79,47 +96,43 @@ function nextGroupId(): number {
     }
     return Math.max(
         store.get("nextGroupId", 0),
-        ...ids
-            .filter(id => Number.isSafeInteger(id) && id >= 0)
-            .map(id => id + 1)
+        ...ids.filter(id => Number.isInteger(id) && id >= 0).map(id => id + 1),
+        0
     )
 }
-
 function allocateGroupId(): number {
     const gid = nextGroupId()
     store.set("nextGroupId", gid + 1)
     return gid
 }
-
+function normalizeGroups(groups: SourceGroup[]): SourceGroup[] {
+    let seen = new Set<number>()
+    let next = nextGroupId()
+    let normalized = groups.map(group => {
+        let gid =
+            Number.isInteger(group.gid) &&
+            group.gid >= 0 &&
+            !seen.has(group.gid)
+                ? group.gid
+                : next++
+        seen.add(gid)
+        return { ...group, gid }
+    })
+    if (next > store.get("nextGroupId", 0)) store.set("nextGroupId", next)
+    return normalized
+}
 ipcMain.on("allocate-group-id", event => {
     event.returnValue = allocateGroupId()
 })
 ipcMain.handle("set-groups", (_, groups: SourceGroup[]) => {
-    store.set(GROUPS_STORE_KEY, groups)
+    store.set(GROUPS_STORE_KEY, normalizeGroups(groups))
 })
 ipcMain.on("get-groups", event => {
-    const nextId = nextGroupId()
-    if (store.get("nextGroupId", 0) < nextId) store.set("nextGroupId", nextId)
-    const groups = store.get(GROUPS_STORE_KEY, []).map(group => ({ ...group }))
-    const ids = new Set<number>()
-    let changed = false
-    for (const group of groups) {
-        if (
-            !Number.isSafeInteger(group.gid) ||
-            group.gid < 0 ||
-            ids.has(group.gid)
-        ) {
-            group.gid = allocateGroupId()
-            changed = true
-        }
-        // Older renderers persisted the transient display index on some groups.
-        if ("index" in group) {
-            delete group.index
-            changed = true
-        }
-        ids.add(group.gid)
+    let stored = store.get(GROUPS_STORE_KEY, [])
+    let groups = normalizeGroups(stored)
+    if (groups.some((group, index) => group.gid !== stored[index]?.gid)) {
+        store.set(GROUPS_STORE_KEY, groups)
     }
-    if (changed) store.set(GROUPS_STORE_KEY, groups)
     event.returnValue = groups
 })
 
@@ -133,39 +146,84 @@ ipcMain.handle("set-menu", (_, state: boolean) => {
 
 const PAC_STORE_KEY = "pac"
 const PAC_STATUS_KEY = "pacOn"
+const PROXY_MODE_KEY = "proxyMode"
+
+function inferProxyMode(address: string): "direct" | "pac" {
+    const saved = store.get(PROXY_MODE_KEY)
+    if (saved === "direct" || saved === "pac") return saved
+    if (!address) return "direct"
+    if (/^socks5?h?:\/\//i.test(address)) return "direct"
+    if (/\.pac(\?|$)/i.test(address) || /\/pac\b/i.test(address)) return "pac"
+    try {
+        const u = new URL(address)
+        if ((u.pathname === "/" || u.pathname === "") && u.port) return "direct"
+    } catch {
+        return "direct"
+    }
+    return "pac"
+}
+
+function normalizeDirectProxyRules(raw: string): string {
+    const v = raw.trim().replace(/\/+$/, "")
+    if (!v) return ""
+    if (/^socks5h:\/\//i.test(v))
+        return v.replace(/^socks5h:\/\//i, "socks5://")
+    if (/^(https?|socks5|socks4):\/\//i.test(v)) return v
+    if (/^(\[[0-9a-f:]+\]|[a-z0-9.-]+):\d+$/i.test(v)) return "http://" + v
+    return v
+}
+
 function getProxyStatus() {
     return store.get(PAC_STATUS_KEY, false)
-}
-function toggleProxyStatus() {
-    store.set(PAC_STATUS_KEY, !getProxyStatus())
-    setProxy()
 }
 function getProxy() {
     return store.get(PAC_STORE_KEY, "")
 }
-function setProxy(address = null) {
-    if (!address) {
-        address = getProxy()
-    } else {
-        store.set(PAC_STORE_KEY, address)
+function getProxyMode(): "direct" | "pac" {
+    return inferProxyMode(getProxy())
+}
+function applyActiveProxy(address: string | null = null) {
+    if (address !== null && address !== undefined) {
+        store.set(PAC_STORE_KEY, String(address).trim())
     }
-    if (getProxyStatus()) {
-        let rules = { pacScript: address }
-        session.defaultSession.setProxy(rules)
-        session.fromPartition("persist:sandbox").setProxy(rules)
+    const current = getProxy().trim()
+    const applyToSessions = (config: Electron.ProxyConfig) => {
+        if (!app.isReady()) return
+        void session.defaultSession.setProxy(config).catch(() => {})
+        void session
+            .fromPartition("persist:sandbox")
+            .setProxy(config)
+            .catch(() => {})
+    }
+    if (!getProxyStatus() || !current) {
+        applyToSessions({ mode: "system" })
+        return
+    }
+    if (getProxyMode() === "direct") {
+        const proxyRules = normalizeDirectProxyRules(current)
+        applyToSessions({ proxyRules, proxyBypassRules: "<local>" })
+    } else {
+        applyToSessions({ pacScript: current })
     }
 }
 ipcMain.on("get-proxy-status", event => {
     event.returnValue = getProxyStatus()
 })
 ipcMain.on("toggle-proxy-status", () => {
-    toggleProxyStatus()
+    store.set(PAC_STATUS_KEY, !getProxyStatus())
+    applyActiveProxy()
+})
+ipcMain.on("get-proxy-mode", event => {
+    event.returnValue = getProxyMode()
+})
+ipcMain.handle("set-proxy-mode", (_, mode: "direct" | "pac") => {
+    store.set(PROXY_MODE_KEY, mode === "pac" ? "pac" : "direct")
 })
 ipcMain.on("get-proxy", event => {
     event.returnValue = getProxy()
 })
-ipcMain.handle("set-proxy", (_, address = null) => {
-    setProxy(address)
+ipcMain.handle("set-proxy", (_, address: string = null) => {
+    applyActiveProxy(address)
 })
 
 const VIEW_STORE_KEY = "view"
@@ -324,6 +382,22 @@ ipcMain.on("get-view-configs", (event, view: ViewType) => {
                 ViewConfigs.ShowCover
             )
             break
+        case ViewType.Magazine:
+            event.returnValue = store.get(
+                "magazineViewConfigs" as keyof SchemaTypes,
+                ViewConfigs.ShowCover |
+                    ViewConfigs.ShowSnippet |
+                    ViewConfigs.FadeRead
+            )
+            break
+        case ViewType.Cards:
+            event.returnValue = store.get(
+                "cardViewConfigs" as keyof SchemaTypes,
+                ViewConfigs.ShowCover |
+                    ViewConfigs.ShowSnippet |
+                    ViewConfigs.FadeRead
+            )
+            break
         default:
             event.returnValue = undefined
             break
@@ -335,6 +409,12 @@ ipcMain.handle(
         switch (view) {
             case ViewType.List:
                 store.set(LIST_CONFIGS_STORE_KEY, configs)
+                break
+            case ViewType.Magazine:
+                store.set("magazineViewConfigs" as keyof SchemaTypes, configs)
+                break
+            case ViewType.Cards:
+                store.set("cardViewConfigs" as keyof SchemaTypes, configs)
                 break
         }
     }
@@ -364,18 +444,6 @@ ipcMain.handle(
             if (rule.highlight && !/^#[0-9a-f]{6}$/i.test(rule.highlight))
                 throw new Error("Invalid highlight color.")
             if (
-                rule.tags &&
-                (!Array.isArray(rule.tags) ||
-                    rule.tags.length > 50 ||
-                    rule.tags.some(
-                        tag =>
-                            typeof tag !== "string" ||
-                            !tag.trim() ||
-                            tag.length > 100
-                    ))
-            )
-                throw new Error("Invalid rule tags.")
-            if (
                 !Array.isArray(rule.actions) ||
                 rule.actions.some(
                     action =>
@@ -386,8 +454,6 @@ ipcMain.handle(
                 throw new Error("Invalid rule action.")
         }
         const key = getRuleTargetKey(target)
-        // Keep the read and write together in main so independent targets cannot
-        // overwrite each other using stale renderer snapshots.
         const allRules = { ...store.get(SOURCE_RULES_STORE_KEY, {}) }
         if (rules.length > 0) allRules[key] = rules
         else delete allRules[key]

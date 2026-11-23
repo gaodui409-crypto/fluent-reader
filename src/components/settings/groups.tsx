@@ -30,6 +30,12 @@ import { openSourcePreferences } from "../../scripts/models/preferences"
 
 const useStyles = makeStyles({
     root: { display: "flex", flexDirection: "column", gap: "16px" },
+    actionRow: {
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        flexWrap: "wrap",
+    },
 })
 
 const GroupsTab: React.FC = () => {
@@ -74,6 +80,7 @@ const GroupsTab: React.FC = () => {
                         options={Object.values(sources)
                             .filter(
                                 source =>
+                                    !source.archived &&
                                     !selectedGroup.sids.includes(source.sid)
                             )
                             .map(source => ({
@@ -88,27 +95,30 @@ const GroupsTab: React.FC = () => {
                             )
                         }
                     />
-                    <Button
-                        disabled={disabled || !addingSources.length}
-                        onClick={() => {
-                            addingSources.forEach(sid =>
-                                dispatch(
-                                    addSourceToGroup(selectedGroup.gid, sid)
+                    <div className={classes.actionRow}>
+                        <Button
+                            appearance="primary"
+                            disabled={disabled || !addingSources.length}
+                            onClick={() => {
+                                addingSources.forEach(sid =>
+                                    dispatch(
+                                        addSourceToGroup(selectedGroup.gid, sid)
+                                    )
                                 )
-                            )
-                            setAddingSources([])
-                        }}>
-                        {intl.get("organize.addToGroup")}
-                    </Button>
+                                setAddingSources([])
+                            }}>
+                            {intl.get("organize.addToGroup")}
+                        </Button>
+                        <Button
+                            onClick={() =>
+                                openSourcePreferences({
+                                    gid: selectedGroup.gid,
+                                })
+                            }>
+                            {intl.get("personal.groupSettings")}
+                        </Button>
+                    </div>
                 </>
-            )}
-            {selectedGroup?.isMultiple && (
-                <Button
-                    onClick={() =>
-                        openSourcePreferences({ gid: selectedGroup.gid })
-                    }>
-                    {intl.get("personal.groupSettings")}
-                </Button>
             )}
             {managing && selectedGroup?.isMultiple ? (
                 <GroupEditor

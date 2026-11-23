@@ -53,7 +53,7 @@ const useStyles = makeStyles({
         backgroundColor: "var(--white)",
         borderTop: "1px solid var(--neutralQuaternaryAlt)",
         zIndex: 2,
-        opacity: 0.78,
+        opacity: 0.96,
         transition: "opacity 0.14s ease",
     },
     choose: {

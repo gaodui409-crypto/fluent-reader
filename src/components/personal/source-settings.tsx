@@ -21,7 +21,7 @@ import {
     resolveSourcePreferences,
     SourcePreferences,
 } from "../../source-preferences"
-import { savePreferences } from "../../scripts/models/preferences"
+import { loadPreferences } from "../../scripts/models/preferences"
 
 type Target = { sids: number[] } | { gid: number }
 
@@ -41,7 +41,7 @@ const useStyles = makeStyles({
     },
     row: {
         display: "grid",
-        gridTemplateColumns: "150px 1fr",
+        gridTemplateColumns: "160px 1fr",
         alignItems: "center",
         gap: "12px",
     },
@@ -49,6 +49,12 @@ const useStyles = makeStyles({
         margin: 0,
         color: "var(--neutralSecondary)",
         lineHeight: "1.6",
+    },
+    groupResetBox: {
+        padding: "10px 12px",
+        borderRadius: "6px",
+        border: "1px solid var(--neutralQuaternaryAlt)",
+        backgroundColor: "var(--neutralLighterAlt)",
     },
 })
 
@@ -63,6 +69,7 @@ export default function SourceSettings() {
     const [changes, setChanges] = useState<Set<keyof SourcePreferences>>(
         new Set()
     )
+    const [clearChildSources, setClearChildSources] = useState(false)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState("")
 
@@ -77,6 +84,7 @@ export default function SourceSettings() {
                     : {}
             setValues(first || {})
             setChanges(new Set())
+            setClearChildSources(false)
             setTarget(nextTarget)
             setError("")
         }
@@ -84,6 +92,7 @@ export default function SourceSettings() {
         return () => window.removeEventListener("source-preferences", listener)
     }, [preferences])
 
+    const isGroupTarget = Boolean(target && "gid" in target)
     const multiple = Boolean(
         target && "sids" in target && target.sids.length > 1
     )
@@ -117,7 +126,13 @@ export default function SourceSettings() {
             else Object.assign(patch, { [key]: values[key] })
         }
         try {
-            await dispatch(savePreferences(target, patch, clear))
+            await window.personal.savePreferences(
+                target,
+                patch,
+                clear,
+                Boolean("gid" in target && clearChildSources)
+            )
+            await dispatch(loadPreferences())
             setTarget(null)
         } catch (err) {
             setError(String(err))
@@ -156,6 +171,8 @@ export default function SourceSettings() {
         "autoSummary",
     ] as const
 
+    const canSave = changes.size > 0 || (isGroupTarget && clearChildSources)
+
     return (
         <Dialog
             hidden={!target}
@@ -164,7 +181,9 @@ export default function SourceSettings() {
             maxWidth={680}
             dialogContentProps={{
                 type: DialogType.close,
-                title: intl.get("personal.sourceSettings"),
+                title: isGroupTarget
+                    ? intl.get("personal.groupSettings")
+                    : intl.get("personal.sourceSettings"),
                 closeButtonAriaLabel: intl.get("close"),
                 subText: name,
             }}
@@ -294,36 +313,61 @@ export default function SourceSettings() {
                 </div>
 
                 <Separator>刷新间隔与过期自动已读</Separator>
-                {(["fetchFrequency", "unreadExpiryDays"] as const).map(key => (
-                    <div className={classes.row} key={key}>
+                {(["fetchFrequency", "unreadExpiryDays"] as const).map(key => {
+                    const isCustom = values[key] !== undefined
+                    return (
+                        <div className={classes.row} key={key}>
+                            <Checkbox
+                                disabled={busy}
+                                label="自定义单独数值"
+                                checked={isCustom}
+                                onChange={(_, checked) =>
+                                    update(
+                                        key,
+                                        checked
+                                            ? basePrefs[key] ??
+                                                  defaultSourcePreferences[key]
+                                            : undefined
+                                    )
+                                }
+                            />
+                            <TextField
+                                disabled={busy || !isCustom}
+                                type="number"
+                                min={0}
+                                label={intl.get("personal." + key)}
+                                description={
+                                    !isCustom && !multiple
+                                        ? `当前跟随默认：${basePrefs[key] ?? 0}`
+                                        : undefined
+                                }
+                                value={String(
+                                    values[key] ?? basePrefs[key] ?? 0
+                                )}
+                                onChange={(_, value) =>
+                                    update(key, Math.max(0, Number(value) || 0))
+                                }
+                            />
+                        </div>
+                    )
+                })}
+
+                {isGroupTarget && (
+                    <div className={classes.groupResetBox}>
                         <Checkbox
                             disabled={busy}
-                            label={intl.get("personal.inherit")}
-                            checked={values[key] === undefined}
+                            checked={clearChildSources}
+                            label="同时清除组内各订阅源的单独覆盖，统一跟随本组设置"
                             onChange={(_, checked) =>
-                                update(
-                                    key,
-                                    checked
-                                        ? undefined
-                                        : basePrefs[key] ??
-                                              defaultSourcePreferences[key]
-                                )
+                                setClearChildSources(Boolean(checked))
                             }
                         />
-                        <TextField
-                            disabled={busy || values[key] === undefined}
-                            type="number"
-                            min={0}
-                            label={intl.get("personal." + key)}
-                            value={String(values[key] ?? basePrefs[key] ?? 0)}
-                            onChange={(_, value) => update(key, Number(value))}
-                        />
                     </div>
-                ))}
+                )}
             </div>
             <DialogFooter>
                 <PrimaryButton
-                    disabled={busy || !changes.size}
+                    disabled={busy || !canSave}
                     onClick={() => void save()}>
                     {intl.get("personal.saveSettings")}
                 </PrimaryButton>

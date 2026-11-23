@@ -13,7 +13,7 @@ import {
     toggleSourceHidden,
 } from "../../scripts/models/source"
 import { importOPML, exportOPML } from "../../scripts/models/group"
-import { AppDispatch, validateFavicon } from "../../scripts/utils"
+import { AppDispatch, urlTest, validateFavicon } from "../../scripts/utils"
 import { saveSettings, toggleSettings } from "../../scripts/models/app"
 import { SyncService } from "../../schema-types"
 import { resolveSourcePreferences } from "../../source-preferences"
@@ -50,6 +50,7 @@ const mapStateToProps = createSelector(
                 ]
             })
         ),
+        groups,
         serviceOn: serviceOn,
         sids: sids,
     })
@@ -60,12 +61,53 @@ const mapDispatchToProps = (dispatch: AppDispatch) => {
         acknowledgeSIDs: () => dispatch(toggleSettings(true)),
         addSource: (url: string) => dispatch(addSource(url)),
         updateSourceName: (source: RSSSource, name: string) => {
-            dispatch(updateSource({ ...source, name: name } as RSSSource))
+            void dispatch(updateSource({ ...source, name: name } as RSSSource))
+        },
+        updateSourceUrl: async (
+            source: RSSSource,
+            url: string
+        ): Promise<boolean> => {
+            const trimmed = url.trim()
+            if (!/^https?:\/\/\S+$/i.test(trimmed) || !urlTest(trimmed)) {
+                window.utils.showErrorBox(intl.get("sources.badUrl"), trimmed)
+                return false
+            }
+            let duplicate = false
+            dispatch((_, getState) => {
+                duplicate = Object.values(getState().sources).some(
+                    other =>
+                        other.sid !== source.sid &&
+                        !other.archived &&
+                        other.url === trimmed
+                )
+            })
+            if (duplicate) {
+                window.utils.showErrorBox(intl.get("sources.exist"), trimmed)
+                return false
+            }
+            dispatch(saveSettings())
+            try {
+                await dispatch(
+                    updateSource({ ...source, url: trimmed } as RSSSource)
+                )
+                return true
+            } catch (error) {
+                const msg = String(error)
+                window.utils.showErrorBox(
+                    msg.includes("UNIQUE constraint failed")
+                        ? intl.get("sources.exist")
+                        : intl.get("personal.failed"),
+                    msg
+                )
+                return false
+            } finally {
+                dispatch(saveSettings())
+            }
         },
         updateSourceIcon: async (source: RSSSource, iconUrl: string) => {
             dispatch(saveSettings())
             if (await validateFavicon(iconUrl)) {
-                dispatch(updateSource({ ...source, iconurl: iconUrl }))
+                await dispatch(updateSource({ ...source, iconurl: iconUrl }))
             } else {
                 window.utils.showErrorBox(intl.get("sources.badIcon"), "")
             }

@@ -12,7 +12,7 @@ import {
 export function hasOpenOverlayModal(): boolean {
     return Array.from(
         document.querySelectorAll<HTMLElement>(
-            ".ms-Dialog-main, .ms-Modal-scrollableContent, .fui-DialogSurface, .ms-ContextualMenu, .ms-Dropdown-callout, .ms-ComboBox-callout, .ms-DatePicker-callout, [role='log-menu'], .fui-MenuPopover, .fui-Listbox"
+            ".ms-Dialog-main, .ms-Modal-scrollableContent, .fui-DialogSurface, .ms-ContextualMenu, .ms-Callout, .ms-Dropdown-callout, .ms-ComboBox-callout, .ms-DatePicker-callout, [role='log-menu'], .fui-MenuPopover, .fui-Listbox"
         )
     ).some(
         el =>
@@ -38,31 +38,41 @@ export function useArticleShortcuts(opts: {
     item: RSSItem | undefined
     articleRef: React.RefObject<HTMLElement>
     webview: React.RefObject<Electron.WebviewTag>
+    webviewModalOpenRef?: React.RefObject<boolean>
     loadWebpage: boolean
     canFetchFull: boolean
+    findOpen: boolean
     notesOpen: boolean
     aiOpen: boolean
+    onOpenFind: () => void
+    onCloseFind: () => void
     closeNotes: () => void
     closeAI: () => void
     toggleWebpage: () => void
     toggleFull: () => void
     onToggleHidden: () => void
     onToggleNotes: () => void
+    onAdjustFontSize: (deltaOrReset: -1 | 0 | 1) => void
 }) {
     const {
         item,
         articleRef,
         webview,
+        webviewModalOpenRef,
         loadWebpage,
         canFetchFull,
+        findOpen,
         notesOpen,
         aiOpen,
+        onOpenFind,
+        onCloseFind,
         closeNotes,
         closeAI,
         toggleWebpage,
         toggleFull,
         onToggleHidden,
         onToggleNotes,
+        onAdjustFontSize,
     } = opts
     const dispatch = useAppDispatch()
 
@@ -104,15 +114,70 @@ export function useArticleShortcuts(opts: {
         [webview, loadWebpage]
     )
 
+    const handleModifierShortcuts = useCallback(
+        (key: string, ctrlOrMeta: boolean, alt: boolean): boolean => {
+            if (!ctrlOrMeta || alt) return false
+            if (key === "f" || key === "F") {
+                onOpenFind()
+                return true
+            }
+            if (!loadWebpage) {
+                if (key === "=" || key === "+") {
+                    onAdjustFontSize(1)
+                    return true
+                }
+                if (key === "-" || key === "_") {
+                    onAdjustFontSize(-1)
+                    return true
+                }
+                if (key === "0") {
+                    onAdjustFontSize(0)
+                    return true
+                }
+            }
+            return false
+        },
+        [loadWebpage, onAdjustFontSize, onOpenFind]
+    )
+
     const handleNavigationKey = useCallback(
         (
             key: string,
-            modifiers?: { ctrl?: boolean; alt?: boolean; meta?: boolean }
+            modifiers?: { ctrl?: boolean; alt?: boolean; meta?: boolean },
+            fromWebview = false
         ) => {
             if (modifiers?.ctrl || modifiers?.alt || modifiers?.meta)
                 return false
             if (hasOpenOverlayModal()) return false
+
+            if (webviewModalOpenRef?.current) {
+                if (key === "Escape") {
+                    void webview.current
+                        ?.executeJavaScript(
+                            "document.getElementById('lightbox')?.close()"
+                        )
+                        .catch(() => {})
+                    return true
+                }
+                if (key === "ArrowLeft" || key === "ArrowRight") {
+                    if (!fromWebview) {
+                        const step = key === "ArrowLeft" ? -1 : 1
+                        void webview.current
+                            ?.executeJavaScript(
+                                `window.__stepLightbox && window.__stepLightbox(${step})`
+                            )
+                            .catch(() => {})
+                    }
+                    return true
+                }
+            }
+
             if (key === "Escape") {
+                if (findOpen) {
+                    onCloseFind()
+                    focusReader()
+                    return true
+                }
                 if (notesOpen) {
                     closeNotes()
                     focusReader()
@@ -136,7 +201,18 @@ export function useArticleShortcuts(opts: {
             }
             return false
         },
-        [dispatch, notesOpen, aiOpen, closeNotes, closeAI, focusReader]
+        [
+            dispatch,
+            webview,
+            webviewModalOpenRef,
+            findOpen,
+            notesOpen,
+            aiOpen,
+            onCloseFind,
+            closeNotes,
+            closeAI,
+            focusReader,
+        ]
     )
 
     useEffect(() => {
@@ -152,21 +228,33 @@ export function useArticleShortcuts(opts: {
         return window.utils.addWebviewKeydownListener(input => {
             if (input.type !== "keyDown") return
             if (hasOpenOverlayModal()) return
-            const hasMod = Boolean(input.control || input.alt || input.meta)
-            if (!hasMod && input.key === " ") {
-                scrollReaderByPage(Boolean(input.shift))
+
+            const ctrlOrMeta = Boolean(input.control || input.meta)
+            if (
+                handleModifierShortcuts(
+                    input.key,
+                    ctrlOrMeta,
+                    Boolean(input.alt)
+                )
+            ) {
                 return
             }
+
+            const hasMod = Boolean(input.control || input.alt || input.meta)
             if (
-                handleNavigationKey(input.key, {
-                    ctrl: input.control,
-                    alt: input.alt,
-                    meta: input.meta,
-                })
+                handleNavigationKey(
+                    input.key,
+                    {
+                        ctrl: input.control,
+                        alt: input.alt,
+                        meta: input.meta,
+                    },
+                    true
+                )
             )
                 return
 
-            if (!hasMod) {
+            if (!hasMod && !webviewModalOpenRef?.current) {
                 switch (input.key) {
                     case "l":
                     case "L":
@@ -212,16 +300,18 @@ export function useArticleShortcuts(opts: {
     }, [
         dispatch,
         item,
+        webviewModalOpenRef,
         toggleWebpage,
         toggleFull,
         canFetchFull,
         onToggleHidden,
         onToggleNotes,
+        handleModifierShortcuts,
         handleNavigationKey,
         scrollReaderByPage,
     ])
 
-    // Document-level reader shortcuts so J/K, Space, N, W, L, M, S, R, O, B, Escape
+    // Document-level reader shortcuts so J/K, Space, N, W, L, M, S, R, O, B, Ctrl+F, Ctrl+=/-, Escape
     // keep working in 3-column ListView and when focus sits on toolbar/cards.
     useEffect(() => {
         if (!item) return
@@ -230,20 +320,41 @@ export function useArticleShortcuts(opts: {
             if (hasOpenOverlayModal()) return
             if (document.querySelector(".settings-container")) return
 
+            const ctrlOrMeta = Boolean(e.ctrlKey || e.metaKey)
             const target = e.target as HTMLElement | null
+
+            // Ctrl+F / Cmd+F always focuses/opens in-article find bar even from an input inside reader
+            if (
+                ctrlOrMeta &&
+                !e.altKey &&
+                (e.key === "f" || e.key === "F") &&
+                !target?.closest(".nav, [role='searchbox']")
+            ) {
+                e.preventDefault()
+                e.stopPropagation()
+                onOpenFind()
+                return
+            }
+
             if (isEditableElement(target)) {
                 if (
                     e.key === "Escape" &&
                     !e.ctrlKey &&
                     !e.altKey &&
                     !e.metaKey &&
-                    target?.closest("[data-reader-drawer]")
+                    target?.closest("[data-reader-drawer], [data-reader-find]")
                 ) {
                     if (handleNavigationKey("Escape")) {
                         e.preventDefault()
                         e.stopPropagation()
                     }
                 }
+                return
+            }
+
+            if (handleModifierShortcuts(e.key, ctrlOrMeta, e.altKey)) {
+                e.preventDefault()
+                e.stopPropagation()
                 return
             }
 
@@ -337,6 +448,8 @@ export function useArticleShortcuts(opts: {
         toggleFull,
         onToggleHidden,
         onToggleNotes,
+        onOpenFind,
+        handleModifierShortcuts,
         handleNavigationKey,
         scrollReaderByPage,
     ])

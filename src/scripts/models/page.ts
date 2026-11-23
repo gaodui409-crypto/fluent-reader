@@ -13,7 +13,7 @@ import {
 import { database, itemsTable } from "../db"
 import { eq } from "drizzle-orm"
 import { getWindowBreakpoint, AppThunk, ActionStatus } from "../utils"
-import { RSSItem, markRead } from "./item"
+import { RSSItem, markRead, flushPendingReadLaterEviction } from "./item"
 import { SourceActionTypes, DELETE_SOURCE } from "./source"
 import { toggleMenu } from "./app"
 import { ViewType, ViewConfigs } from "../../schema-types"
@@ -90,6 +90,7 @@ export type PageActionTypes =
 
 export function selectAllArticles(init = false): AppThunk {
     return (dispatch, getState) => {
+        dispatch(flushPendingReadLaterEviction(null))
         const existingFilter = getState().feeds[ALL]?.filter
         dispatch({
             type: SELECT_PAGE,
@@ -99,8 +100,8 @@ export function selectAllArticles(init = false): AppThunk {
             init:
                 init ||
                 getState().page.feedId !== ALL ||
-                !!getState().page.filter.tag ||
-                !!getState().page.filter.laterOnly,
+                !!getState().page.filter.laterOnly ||
+                !!getState().page.filter.savedOnly,
         } as PageActionTypes)
     }
 }
@@ -112,6 +113,7 @@ export function selectSources(
 ): AppThunk {
     return (dispatch, getState) => {
         if (getState().app.menuKey !== menuKey) {
+            dispatch(flushPendingReadLaterEviction(null))
             const existingFilter = getState().feeds[menuKey]?.filter
             dispatch({
                 type: SELECT_PAGE,
@@ -139,6 +141,7 @@ export function selectSources(
 
 export function switchView(viewType: ViewType): AppThunk {
     return (dispatch, getState) => {
+        dispatch(flushPendingReadLaterEviction(null))
         const key = collectionKey(getState().app.menuKey)
         if (key) {
             const collections = { ...getState().reading.collections }
@@ -153,30 +156,39 @@ export function switchView(viewType: ViewType): AppThunk {
 }
 
 export function selectCollection(
-    collection: "tag" | "later" | "starred" | "folder" | "library",
+    collection: "later" | "starred" | "saved" | "folder" | "library",
     tag = "",
     label = ""
 ): AppThunk {
     return async (dispatch, getState) => {
-        const sids = Object.values(getState().sources).map(source => source.sid)
+        dispatch(flushPendingReadLaterEviction(null))
+        const state = getState()
+        const sids = Object.values(state.sources).map(source => source.sid)
         const title =
             label ||
-            (collection === "tag"
-                ? "#" + tag
-                : collection === "later"
+            (collection === "later"
                 ? intl.get("personal.readLater")
+                : collection === "saved"
+                ? "离线网页"
                 : intl.get("personal.favorites"))
-        const existingFilter = getState().feeds[collection + ":" + tag]?.filter
+        const feedKey = collection + ":" + tag
+        const existingFilter = state.feeds[feedKey]?.filter
         const filter: FeedFilter = existingFilter
-            ? { ...existingFilter }
+            ? {
+                  ...existingFilter,
+                  savedIds:
+                      collection === "saved" ? state.library.saved : undefined,
+              }
             : {
                   ...new FeedFilter(
                       FilterType.Default |
                           FilterType.CaseInsensitive |
                           FilterType.KeywordSearch
                   ),
-                  tag: collection === "tag" ? tag : undefined,
                   laterOnly: collection === "later",
+                  savedOnly: collection === "saved",
+                  savedIds:
+                      collection === "saved" ? state.library.saved : undefined,
                   library: true,
                   folderId: collection === "folder" ? Number(tag) : undefined,
                   unfiled: collection === "library",
@@ -186,11 +198,10 @@ export function selectCollection(
             type: SELECT_PAGE,
             pageType: PageType.Sources,
             sids,
-            menuKey: collection + ":" + tag,
+            menuKey: feedKey,
             viewType:
-                getState().reading.collections[
-                    collectionKey(collection + ":" + tag)
-                ]?.view ?? globalThis.settings.getDefaultView(),
+                state.reading.collections[collectionKey(feedKey)]?.view ??
+                globalThis.settings.getDefaultView(),
             title,
             keepMenu: getWindowBreakpoint(),
             filter,
@@ -202,6 +213,7 @@ export function selectCollection(
 
 export function showArchiveMatches(ids: number[], title?: string): AppThunk {
     return async (dispatch, getState) => {
+        dispatch(flushPendingReadLaterEviction(null))
         dispatch({
             type: SELECT_PAGE,
             pageType: PageType.Sources,
@@ -238,6 +250,7 @@ export function showItem(feedId: string, item: RSSItem): AppThunk {
             state.items.hasOwnProperty(item._id) &&
             state.sources.hasOwnProperty(item.source)
         ) {
+            dispatch(flushPendingReadLaterEviction(item._id))
             void window.personal.opened?.(item._id).catch(console.error)
             dispatch({
                 type: SHOW_ITEM,
@@ -265,8 +278,8 @@ export function showItemFromId(iid: number): AppThunk {
                     )
                 )
             }
-            if (!item.hasRead) await dispatch(markRead(item))
             dispatch(showItem(null, getState().items[iid]))
+            if (!item.hasRead) await dispatch(markRead(item))
         } catch (error) {
             window.utils.showErrorBox(
                 intl.get("personal.failed"),
@@ -276,7 +289,12 @@ export function showItemFromId(iid: number): AppThunk {
     }
 }
 
-export const dismissItem = (): PageActionTypes => ({ type: DISMISS_ITEM })
+export function dismissItem(): AppThunk {
+    return dispatch => {
+        dispatch(flushPendingReadLaterEviction(null))
+        dispatch({ type: DISMISS_ITEM })
+    }
+}
 
 export const toggleSearch = (): AppThunk => {
     return (dispatch, getState) => {
@@ -332,8 +350,8 @@ export function showOffsetItem(offset: number): AppThunk<Promise<void>> {
         if (index < feed.iids.length) {
             const item = state.items[feed.iids[index]]
             if (!item) return
-            dispatch(markRead(item))
             dispatch(showItem(feedId, item))
+            dispatch(markRead(item))
             return
         }
 

@@ -51,6 +51,8 @@ export class FeedFilter {
     search: string
     tag?: string
     laterOnly?: boolean
+    savedOnly?: boolean
+    savedIds?: number[]
     library?: boolean
     folderId?: number
     ids?: number[]
@@ -85,6 +87,8 @@ export class FeedFilter {
         let flag = true
         if (filter.tag) flag = flag && (item.tags || []).includes(filter.tag)
         if (filter.laterOnly) flag = flag && !!item.readLater
+        if (filter.savedOnly && filter.savedIds)
+            flag = flag && filter.savedIds.includes(item._id)
         if (!(type & FilterType.ShowRead)) flag = flag && !item.hasRead
         if (!(type & FilterType.ShowNotStarred)) flag = flag && item.starred
         if (!(type & FilterType.ShowHidden) && !filter.library)
@@ -181,6 +185,10 @@ export class RSSFeed {
                 sql`${itemsTable.tags} <> '[]' AND EXISTS (SELECT 1 FROM json_each(${itemsTable.tags}) WHERE value=${filter.tag})`
             )
         if (filter.laterOnly) conditions.push(eq(itemsTable.readLater, true))
+        if (filter.savedOnly)
+            conditions.push(
+                sql`EXISTS (SELECT 1 FROM article_content ac WHERE ac.itemId=${itemsTable._id} AND ac.offlinePath IS NOT NULL AND ac.offlinePath <> '')`
+            )
         if (!(type & FilterType.ShowRead))
             conditions.push(eq(itemsTable.hasRead, false))
         if (!(type & FilterType.ShowNotStarred))

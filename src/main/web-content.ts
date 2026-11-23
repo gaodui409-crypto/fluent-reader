@@ -8,6 +8,7 @@ import type { SourcePreferences } from "../source-preferences"
 import { DomainQueue, httpURL, RequestError } from "./domain-queue"
 import { forumBody } from "../forum"
 import type {
+    ExtractionPreview,
     FullArticle,
     PersonalSettings,
     SiteExtractionRule,
@@ -15,6 +16,8 @@ import type {
 
 export const WEB_PARTITION = "persist:sandbox"
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+const SAFE_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]{0,120}$/
+const SAFE_HASH_HREF_PATTERN = /^#[A-Za-z][A-Za-z0-9_.:-]{0,120}$/
 
 export function htmlText(html: string): string {
     const { document } = parseHTML(`<html><body>${html || ""}</body></html>`)
@@ -50,20 +53,36 @@ export function cleanHTML(html: string, url: string): string {
         ]),
         allowedAttributes: {
             ...sanitizeHtml.defaults.allowedAttributes,
-            img: ["src", "alt", "width", "height"],
-            video: ["src", "controls", "poster"],
-            audio: ["src", "controls"],
-            source: ["src", "type"],
-            details: ["open"],
-            code: ["class"],
-            blockquote: ["cite"],
+            "*": [
+                ...(sanitizeHtml.defaults.allowedAttributes["*"] || []),
+                "id",
+            ],
+            "img": ["src", "alt", "width", "height"],
+            "video": ["src", "controls", "poster"],
+            "audio": ["src", "controls"],
+            "source": ["src", "type"],
+            "details": ["open"],
+            "code": ["class"],
+            "blockquote": ["cite"],
         },
         allowedSchemes: ["https", "http", "data"],
         allowedSchemesByTag: { a: ["https", "http", "mailto"] },
         transformTags: {
             "*": (tagName, attribs) => {
+                if (
+                    attribs.id !== undefined &&
+                    !SAFE_ID_PATTERN.test(attribs.id)
+                ) {
+                    delete attribs.id
+                }
                 for (const key of ["src", "href", "poster"]) {
                     if (attribs[key]) {
+                        if (
+                            key === "href" &&
+                            SAFE_HASH_HREF_PATTERN.test(attribs[key])
+                        ) {
+                            continue
+                        }
                         try {
                             attribs[key] = new URL(attribs[key], url).href
                         } catch {
@@ -204,6 +223,33 @@ export async function responseHTML(
     }
 }
 
+function extractDocumentTitle(rawHtml: string, fallback: string): string {
+    try {
+        const { document } = parseHTML(rawHtml)
+        const metaTitle = document
+            .querySelector(
+                'meta[property="og:title"], meta[name="twitter:title"]'
+            )
+            ?.getAttribute("content")
+            ?.replace(/\s+/g, " ")
+            .trim()
+        if (metaTitle) return metaTitle
+        const titleEl = document
+            .querySelector("title")
+            ?.textContent?.replace(/\s+/g, " ")
+            .trim()
+        if (titleEl) return titleEl
+        const h1 = document
+            .querySelector("h1")
+            ?.textContent?.replace(/\s+/g, " ")
+            .trim()
+        if (h1) return h1
+    } catch {
+        // Ignore title parse failure and use fallback.
+    }
+    return fallback
+}
+
 export async function extractArticle(
     html: string,
     url: string,
@@ -286,6 +332,76 @@ export class FullText {
         private updated?: () => void
     ) {}
 
+    private async fetchDirectHTML(href: string): Promise<string> {
+        const doFetch =
+            session && typeof session.fromPartition === "function"
+                ? (url: string, init: RequestInit) =>
+                      session.fromPartition(WEB_PARTITION).fetch(url, init)
+                : globalThis.fetch
+        return responseHTML(
+            await doFetch(href, {
+                credentials: "include",
+                signal: AbortSignal.timeout(30000),
+            })
+        )
+    }
+
+    async preview(
+        address: string,
+        overrideRule?: Partial<SiteExtractionRule>
+    ): Promise<ExtractionPreview> {
+        const trimmed = String(address || "").trim()
+        if (!trimmed) throw new Error("请输入要测试预览的文章网址。")
+        const url = httpURL(
+            trimmed.includes("://") ? trimmed : "https://" + trimmed
+        )
+        const savedRule = this.settings().siteRules.find(
+            rule => rule.host.toLowerCase() === url.hostname.toLowerCase()
+        )
+        const requestedMode = overrideRule?.mode ?? savedRule?.mode ?? "direct"
+        if (overrideRule?.mode === "off") {
+            throw new Error(
+                "当前规则模式为关闭抓取，请切换为直接抓取或网页渲染后再测试预览。"
+            )
+        }
+        const effectiveRule: SiteExtractionRule = {
+            host: url.hostname.toLowerCase(),
+            container:
+                overrideRule?.container !== undefined
+                    ? validateCssSelector(
+                          String(overrideRule.container || "").slice(0, 2000),
+                          "正文选择器"
+                      )
+                    : savedRule?.container || "",
+            remove:
+                overrideRule?.remove !== undefined
+                    ? validateCssSelector(
+                          String(overrideRule.remove || "").slice(0, 2000),
+                          "移除元素选择器"
+                      )
+                    : savedRule?.remove || "",
+            mode: requestedMode === "rendered" ? "rendered" : "direct",
+        }
+
+        return this.queue.add(url.href, "previewExtraction", async () => {
+            const raw =
+                effectiveRule.mode === "rendered"
+                    ? await renderedPage(url.href, win =>
+                          win.webContents.executeJavaScript(
+                              "document.documentElement.outerHTML"
+                          )
+                      )
+                    : await this.fetchDirectHTML(url.href)
+            const title = extractDocumentTitle(raw, url.hostname)
+            const html = await extractArticle(raw, url.href, effectiveRule)
+            return {
+                title,
+                html,
+                textLength: htmlText(html).length,
+            }
+        })
+    }
+
     async get(
         id: number,
         force = false,
@@ -329,14 +445,7 @@ export class FullText {
                           "document.documentElement.outerHTML"
                       )
                   )
-                : await responseHTML(
-                      await session
-                          .fromPartition(WEB_PARTITION)
-                          .fetch(url.href, {
-                              credentials: "include",
-                              signal: AbortSignal.timeout(30000),
-                          })
-                  )
+                : await this.fetchDirectHTML(url.href)
             const html = await extractArticle(raw, url.href, rule)
             const fetchedAt = Date.now()
             if (
@@ -360,3 +469,5 @@ export class FullText {
         }
     }
 }
+
+export { FullText as WebContentService }

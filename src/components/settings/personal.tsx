@@ -1,14 +1,13 @@
 import * as React from "react"
 import intl from "react-intl-universal"
-import {
-    DefaultButton,
-    MessageBar,
-    MessageBarType,
-    PrimaryButton,
-} from "@fluentui/react"
+import { MessageBar, MessageBarType } from "@fluentui/react"
 import { makeStyles, mergeClasses } from "@griffel/react"
 import { AISettingsPanel } from "../personal/ai"
-import { usePersonalSettings } from "./personal/usePersonalSettings"
+import { SourceHealthPanel } from "../personal/subscriptions"
+import {
+    usePersonalSettings,
+    PersonalPrefillRequest,
+} from "./personal/usePersonalSettings"
 import {
     AccountsSection,
     SiteRulesSection,
@@ -21,54 +20,74 @@ import {
 import {
     HealthSettingsSection,
     NetworkSection,
-    ShortcutsSection,
 } from "./personal/NetworkHealthShortcutsSections"
 
+export type PersonalSectionMode =
+    | "health"
+    | "ai"
+    | "accounts"
+    | "network"
+    | "backup"
+
+export type { PersonalPrefillRequest }
+
 const useStyles = makeStyles({
-    root: { display: "flex", flexDirection: "column", gap: "16px" },
-    navigation: {
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "6px",
-        paddingBottom: "12px",
-        borderBottom: "1px solid var(--neutralQuaternaryAlt)",
-    },
-    saveBar: {
-        position: "sticky",
-        top: 0,
-        zIndex: 2,
-        backgroundColor: "var(--white)",
-        paddingTop: "6px",
-        paddingBottom: "8px",
+    root: { display: "flex", flexDirection: "column", gap: "20px" },
+    statusRow: {
         display: "flex",
         alignItems: "center",
-        gap: "12px",
-        flexWrap: "wrap",
+        justifyContent: "flex-end",
+        minHeight: "20px",
+        marginBottom: "-12px",
     },
-    dirtyHint: {
+    autoSaveBadge: {
         fontSize: "12px",
-        color: "var(--neutralSecondary)",
+        lineHeight: "20px",
+        padding: "0 8px",
+        borderRadius: "4px",
+        color: "var(--themePrimary)",
+        backgroundColor: "var(--neutralLighterAlt)",
+        border: "1px solid var(--neutralQuaternaryAlt)",
+        transition: "opacity 0.18s ease",
+        userSelect: "none",
+    },
+    autoSaveHidden: {
+        opacity: 0,
+        pointerEvents: "none",
     },
 })
 
-const SECTION_KEYS = [
-    "accounts",
-    "siteRules",
-    "offlineSave",
-    "ai",
-    "backup",
-    "search",
-    "network",
-    "health",
-    "shortcuts",
-] as const
-
-export default function PersonalTab() {
+export default function PersonalTab({
+    section = "accounts",
+    prefill,
+}: {
+    section?: PersonalSectionMode
+    prefill?: PersonalPrefillRequest
+}) {
     const classes = useStyles()
-    const s = usePersonalSettings()
+    const s = usePersonalSettings(section, prefill)
+
+    const showStatusSlot = section !== "ai"
 
     return (
         <div className={mergeClasses("tab-body", classes.root)}>
+            {showStatusSlot && (
+                <div
+                    className={classes.statusRow}
+                    role="status"
+                    aria-live="polite">
+                    <span
+                        className={mergeClasses(
+                            classes.autoSaveBadge,
+                            s.autoSaveState === "idle" && classes.autoSaveHidden
+                        )}>
+                        {s.autoSaveState === "saving"
+                            ? "正在保存…"
+                            : "✓ 已自动保存"}
+                    </span>
+                </div>
+            )}
+
             {s.error && (
                 <MessageBar messageBarType={MessageBarType.error}>
                     {intl.get("personal.failed")} {s.error}
@@ -79,171 +98,193 @@ export default function PersonalTab() {
                     {s.message}
                 </MessageBar>
             )}
-            <div
-                className={classes.navigation}
-                role="tablist"
-                aria-label={intl.get("organize.settingsSections")}>
-                {SECTION_KEYS.map(key => (
-                    <DefaultButton
-                        key={key}
-                        role="tab"
-                        aria-selected={s.section === key}
-                        aria-controls={"personal-" + key}
-                        checked={s.section === key}
-                        onClick={() => s.setSection(key)}>
-                        {key === "ai"
-                            ? intl.get("ai.settings")
-                            : key === "health"
-                            ? intl.get("health.title")
-                            : intl.get("personal." + key)}
-                    </DefaultButton>
-                ))}
-            </div>
 
-            {s.needsSaveBar && (
-                <div className={classes.saveBar}>
-                    <PrimaryButton
-                        disabled={s.busy}
-                        onClick={() => void s.saveAllSettings()}>
-                        {intl.get("personal.saveSettings")}
-                    </PrimaryButton>
-                    {s.dirty && (
-                        <span className={classes.dirtyHint}>
-                            有未保存的修改，点击「保存设置」后生效
-                        </span>
-                    )}
-                </div>
+            {section === "accounts" && (
+                <>
+                    <AccountsSection
+                        site={s.site}
+                        onSiteChange={s.setSite}
+                        accounts={s.accounts}
+                        busy={s.busy}
+                        onLogin={normalizedUrl =>
+                            void s.act(async () => {
+                                await window.personal.login(normalizedUrl)
+                                s.setAccounts(await window.personal.accounts())
+                                return null
+                            })
+                        }
+                        onRefreshAccounts={() =>
+                            void s.act(async () => {
+                                s.setAccounts(await window.personal.accounts())
+                                return null
+                            })
+                        }
+                        onClearAccount={host =>
+                            void s.act(async () => {
+                                await window.personal.clearAccount(host)
+                                s.setAccounts(await window.personal.accounts())
+                                return "✓ 已清除该站点登录状态"
+                            })
+                        }
+                    />
+                    <SiteRulesSection
+                        settings={s.settings}
+                        host={s.host}
+                        onHostChange={s.setHost}
+                        mode={s.mode}
+                        onModeChange={s.setMode}
+                        container={s.container}
+                        onContainerChange={s.setContainer}
+                        remove={s.remove}
+                        onRemoveChange={s.setRemove}
+                        testUrl={s.testUrl}
+                        onTestUrlChange={s.setTestUrl}
+                        onUpdateRules={rules =>
+                            void s.saveImmediate({ siteRules: rules })
+                        }
+                    />
+                </>
             )}
 
-            {s.section === "accounts" && (
-                <AccountsSection
-                    site={s.site}
-                    onSiteChange={s.setSite}
-                    accounts={s.accounts}
-                    busy={s.busy}
-                    onLogin={() =>
-                        void s.act(() => window.personal.login(s.site))
-                    }
-                    onRefreshAccounts={() =>
-                        void s.act(async () => {
-                            s.setAccounts(await window.personal.accounts())
-                            return null
-                        })
-                    }
-                    onClearAccount={host =>
-                        void s.act(async () => {
-                            await window.personal.clearAccount(host)
-                            s.setAccounts(await window.personal.accounts())
-                            return true
-                        })
-                    }
-                />
+            {section === "backup" && (
+                <>
+                    <BackupSection
+                        settings={s.settings}
+                        status={s.status}
+                        busy={s.busy}
+                        onChooseFolder={() =>
+                            void s.act(async () => {
+                                const folder =
+                                    await window.personal.chooseFolder()
+                                if (folder) {
+                                    await s.saveImmediate({
+                                        backupFolder: folder,
+                                    })
+                                }
+                                return null
+                            })
+                        }
+                        onOpenBackupFolder={() =>
+                            void s.act(async () => {
+                                await window.personal.openPath(
+                                    s.settings.backupFolder
+                                )
+                                return null
+                            })
+                        }
+                        onChangeSchedule={schedule =>
+                            void s.saveImmediate({ backupSchedule: schedule })
+                        }
+                        onChangeKeep={(keep, valid) =>
+                            s.updateDraft("backupKeep", keep, valid)
+                        }
+                        onBlurKeep={clamped =>
+                            s.flushDraft({ backupKeep: clamped })
+                        }
+                        onBackupNow={() =>
+                            void s.act(async () => {
+                                s.flushDraft()
+                                const archivePath =
+                                    await window.personal.backup()
+                                await s.refreshSettings()
+                                return archivePath
+                            })
+                        }
+                        onRestore={() =>
+                            void s.act(() => window.personal.restore())
+                        }
+                    />
+                    <OfflineSaveSection
+                        settings={s.settings}
+                        status={s.status}
+                        busy={s.busy}
+                        onChooseFolder={() =>
+                            void s.act(async () => {
+                                const folder =
+                                    await window.personal.chooseFolder()
+                                if (folder) {
+                                    await s.saveImmediate({
+                                        offlineFolder: folder,
+                                    })
+                                }
+                                return null
+                            })
+                        }
+                        onOpenOfflineFolder={() =>
+                            void s.act(async () => {
+                                await window.personal.openPath(
+                                    s.settings.offlineFolder
+                                )
+                                return null
+                            })
+                        }
+                        onToggleRemoveLater={checked =>
+                            void s.saveImmediate({ removeLaterOnRead: checked })
+                        }
+                        onRetryTask={id =>
+                            void s.act(() => window.personal.saveOffline(id))
+                        }
+                        onShowFile={id =>
+                            void s.act(() =>
+                                window.personal.openOffline(id, true)
+                            )
+                        }
+                    />
+                    <SearchIndexSection
+                        status={s.status}
+                        busy={s.busy}
+                        onRebuild={() =>
+                            void s.act(() => window.personal.rebuildIndex())
+                        }
+                    />
+                </>
             )}
 
-            {s.section === "siteRules" && (
-                <SiteRulesSection
-                    settings={s.settings}
-                    host={s.host}
-                    onHostChange={s.setHost}
-                    mode={s.mode}
-                    onModeChange={s.setMode}
-                    container={s.container}
-                    onContainerChange={s.setContainer}
-                    remove={s.remove}
-                    onRemoveChange={s.setRemove}
-                    onUpdateRules={rules => s.update("siteRules", rules)}
-                />
-            )}
-
-            {s.section === "offlineSave" && (
-                <OfflineSaveSection
-                    settings={s.settings}
-                    status={s.status}
-                    busy={s.busy}
-                    onChooseFolder={() =>
-                        void s.act(async () => {
-                            const folder = await window.personal.chooseFolder()
-                            if (folder) s.update("offlineFolder", folder)
-                            return null
-                        })
-                    }
-                    onToggleRemoveLater={checked =>
-                        s.update("removeLaterOnRead", checked)
-                    }
-                    onRetryTask={id =>
-                        void s.act(() => window.personal.saveOffline(id))
-                    }
-                    onShowFile={id =>
-                        void s.act(() => window.personal.openOffline(id, true))
-                    }
-                />
-            )}
-
-            {s.section === "ai" && (
-                <section id="personal-ai" role="tabpanel">
+            {section === "ai" && (
+                <section id="personal-ai">
                     <AISettingsPanel />
                 </section>
             )}
 
-            {s.section === "backup" && (
-                <BackupSection
-                    settings={s.settings}
-                    status={s.status}
-                    busy={s.busy}
-                    onChooseFolder={() =>
-                        void s.act(async () => {
-                            const folder = await window.personal.chooseFolder()
-                            if (folder) s.update("backupFolder", folder)
-                            return null
-                        })
-                    }
-                    onChangeSchedule={schedule =>
-                        s.update("backupSchedule", schedule)
-                    }
-                    onChangeKeep={keep => s.update("backupKeep", keep)}
-                    onBackupNow={() =>
-                        void s.act(async () => {
-                            const saved = await window.personal.saveSettings(
-                                s.settings
-                            )
-                            s.replaceSavedSettings(saved)
-                            return window.personal.backup()
-                        })
-                    }
-                    onRestore={() =>
-                        void s.act(() => window.personal.restore())
-                    }
-                />
-            )}
-
-            {s.section === "search" && (
-                <SearchIndexSection
-                    status={s.status}
-                    busy={s.busy}
-                    onRebuild={() =>
-                        void s.act(() => window.personal.rebuildIndex())
-                    }
-                />
-            )}
-
-            {s.section === "network" && (
+            {section === "network" && (
                 <NetworkSection
                     settings={s.settings}
                     status={s.status}
-                    onChangeDomainInterval={n => s.update("domainInterval", n)}
-                    onChangeConcurrency={n => s.update("concurrency", n)}
+                    onChangeDomainInterval={(n, valid) =>
+                        s.updateDraft("domainInterval", n, valid)
+                    }
+                    onBlurDomainInterval={clamped =>
+                        s.flushDraft({ domainInterval: clamped })
+                    }
+                    onChangeConcurrency={(n, valid) =>
+                        s.updateDraft("concurrency", n, valid)
+                    }
+                    onBlurConcurrency={clamped =>
+                        s.flushDraft({ concurrency: clamped })
+                    }
                 />
             )}
 
-            {s.section === "health" && (
-                <HealthSettingsSection
-                    settings={s.settings}
-                    onChangeRssHub={v => s.update("rssHub", v)}
-                    onChangeStaleDays={n => s.update("staleDays", n)}
-                />
+            {section === "health" && (
+                <>
+                    <HealthSettingsSection
+                        settings={s.settings}
+                        onChangeRssHub={(v, valid) =>
+                            s.updateDraft("rssHub", v, valid)
+                        }
+                        onBlurRssHub={normalized =>
+                            s.flushDraft({ rssHub: normalized })
+                        }
+                        onChangeStaleDays={(n, valid) =>
+                            s.updateDraft("staleDays", n, valid)
+                        }
+                        onBlurStaleDays={clamped =>
+                            s.flushDraft({ staleDays: clamped })
+                        }
+                    />
+                    <SourceHealthPanel defaultOpen />
+                </>
             )}
-
-            {s.section === "shortcuts" && <ShortcutsSection />}
         </div>
     )
 }

@@ -9,8 +9,8 @@ import {
     saveOffline,
     openOffline,
     deleteOffline,
+    notifyToast,
 } from "../../scripts/models/library"
-import { editTags } from "../personal/tags"
 import { platformCtrl } from "../../scripts/utils"
 import {
     markAllRead,
@@ -22,14 +22,18 @@ import {
     updateItemMeta,
 } from "../../scripts/models/item"
 import { selectArticle } from "../../scripts/models/organize"
+import { refreshArchive } from "../../scripts/models/archive"
 import { ViewConfigs } from "../../schema-types"
 import { useAppDispatch, useAppSelector } from "../../scripts/reducer"
 import { setViewConfigs, showItem } from "../../scripts/models/page"
+import { openFolders, useFolders } from "../personal/folders"
 import { ContextMenuBase, shareSubmenu } from "./shared"
 
 export function ItemContextMenu() {
     const dispatch = useAppDispatch()
+    const { folders } = useFolders()
     const viewConfigs = useAppSelector(state => state.page.viewConfigs)
+    const menuKey = useAppSelector(state => state.app.menuKey)
     const target = useAppSelector(state => state.app.contextMenu.target)
     const item = target?.[0] as RSSItem | undefined
     const feedId = target?.[1] as string | undefined
@@ -52,6 +56,77 @@ export function ItemContextMenu() {
     const offlineBusy =
         offlineTask?.state === "waiting" || offlineTask?.state === "running"
     const offlineFailed = offlineTask?.state === "failed"
+    const activeFolderId = menuKey?.startsWith("folder:")
+        ? Number(menuKey.slice(7))
+        : undefined
+
+    const assignToFolder = async (folderId: number, folderName: string) => {
+        try {
+            const res = await window.personal.archiveApply([item._id], {
+                kind: "folder",
+                folderId,
+            })
+            await dispatch(refreshArchive(res))
+            notifyToast(`已归入「${folderName}」`, "success")
+        } catch (err) {
+            notifyToast(`归入文件夹失败：${String(err)}`, "error")
+        }
+    }
+
+    const removeFromCurrentFolder = async () => {
+        if (!activeFolderId) return
+        try {
+            const res = await window.personal.archiveApply([item._id], {
+                kind: "remove",
+                folderId: activeFolderId,
+            })
+            await dispatch(refreshArchive(res))
+            notifyToast("已移出当前文件夹", "info")
+        } catch (err) {
+            notifyToast(`移出失败：${String(err)}`, "error")
+        }
+    }
+
+    const folderMenuItems: IContextualMenuItem[] = [
+        ...folders
+            .filter(f => f.parentId === null)
+            .flatMap(parent => {
+                const children = folders.filter(c => c.parentId === parent.id)
+                return [
+                    {
+                        key: "f-" + parent.id,
+                        text: parent.name,
+                        iconProps: { iconName: "FolderHorizontal" },
+                        onClick: () =>
+                            void assignToFolder(parent.id, parent.name),
+                    },
+                    ...children.map(child => ({
+                        key: "f-" + child.id,
+                        text: `  └ ${child.name}`,
+                        iconProps: { iconName: "FolderHorizontal" },
+                        onClick: () =>
+                            void assignToFolder(
+                                child.id,
+                                `${parent.name} / ${child.name}`
+                            ),
+                    })),
+                ]
+            }),
+        ...(folders.length
+            ? [
+                  {
+                      key: "folder_div",
+                      itemType: ContextualMenuItemType.Divider,
+                  },
+              ]
+            : []),
+        {
+            key: "manageFolders",
+            text: "＋ 新建 / 管理文章文件夹…",
+            iconProps: { iconName: "FabricNewFolder" },
+            onClick: () => openFolders(),
+        },
+    ]
 
     const menuItems: IContextualMenuItem[] = [
         {
@@ -74,11 +149,45 @@ export function ItemContextMenu() {
                 void dispatch(
                     updateItemMeta(item, { readLater: !item.readLater })
                 ).catch(error =>
-                    window.utils.showErrorBox(
-                        intl.get("personal.failed"),
-                        String(error)
+                    notifyToast(
+                        `${intl.get("personal.failed")} ${String(error)}`,
+                        "error"
                     )
                 )
+            },
+        },
+        {
+            key: "folderAssign",
+            text: "归入文件夹",
+            iconProps: { iconName: "FolderHorizontal" },
+            subMenuProps: {
+                items: folderMenuItems,
+            },
+        },
+        ...(activeFolderId
+            ? [
+                  {
+                      key: "removeFromFolder",
+                      text: "移出当前文件夹",
+                      iconProps: { iconName: "FolderList" },
+                      onClick: () => void removeFromCurrentFolder(),
+                  },
+              ]
+            : []),
+        {
+            key: "openNotes",
+            text: "备注与归类",
+            iconProps: { iconName: "EditNote" },
+            onClick: () => {
+                dispatch(showItem(feedId, item))
+                dispatch(markRead(item))
+                setTimeout(() => {
+                    window.dispatchEvent(
+                        new CustomEvent("open-article-notes", {
+                            detail: { id: item._id },
+                        })
+                    )
+                }, 80)
             },
         },
         ...(preferences.offlineEnabled
@@ -135,8 +244,8 @@ export function ItemContextMenu() {
             text: intl.get("context.read"),
             iconProps: { iconName: "TextDocument" },
             onClick: () => {
-                dispatch(markRead(item))
                 dispatch(showItem(feedId, item))
+                dispatch(markRead(item))
             },
         },
         {
@@ -217,14 +326,6 @@ export function ItemContextMenu() {
             },
             onClick: () => {
                 dispatch(toggleHidden(item))
-            },
-        },
-        {
-            key: "tags",
-            text: intl.get("personal.editTags"),
-            iconProps: { iconName: "Tag" },
-            onClick: () => {
-                editTags(item._id)
             },
         },
         {

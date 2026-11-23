@@ -5,7 +5,7 @@ import {
     ContextualMenuItemType,
 } from "@fluentui/react/lib/ContextualMenu"
 import { openSourcePreferences } from "../../scripts/models/preferences"
-import { toggleSettings } from "../../scripts/models/app"
+import { GroupMenuTarget, toggleSettings } from "../../scripts/models/app"
 import { fetchItems, markAllRead, RSSItem } from "../../scripts/models/item"
 import { RSSFeed } from "../../scripts/models/feed"
 import { refreshArchive } from "../../scripts/models/archive"
@@ -15,15 +15,18 @@ import { ContextMenuBase } from "./shared"
 
 export function GroupContextMenu() {
     const dispatch = useAppDispatch()
-    const sids = useAppSelector(
+    const rawTarget = useAppSelector(
         state => state.app.contextMenu.target
-    ) as number[]
+    ) as GroupMenuTarget
+    const sids = Array.isArray(rawTarget) ? rawTarget : rawTarget?.sids || []
+    const gid = Array.isArray(rawTarget) ? undefined : rawTarget?.gid
 
     const menuItems: IContextualMenuItem[] = [
         {
             key: "markAllRead",
             text: intl.get("nav.markAllRead"),
             iconProps: { iconName: "CheckMark" },
+            disabled: sids.length === 0,
             onClick: () => {
                 dispatch(markAllRead(sids))
             },
@@ -32,6 +35,7 @@ export function GroupContextMenu() {
             key: "refresh",
             text: intl.get("nav.refresh"),
             iconProps: { iconName: "Sync" },
+            disabled: sids.length === 0,
             onClick: () => {
                 void dispatch(fetchItems(false, sids)).catch(console.error)
             },
@@ -46,9 +50,15 @@ export function GroupContextMenu() {
         },
         {
             key: "sourcePreferences",
-            text: intl.get("personal.sourceSettings"),
+            text:
+                gid !== undefined
+                    ? intl.get("personal.groupSettings")
+                    : intl.get("personal.sourceSettings"),
             iconProps: { iconName: "Sliders" },
-            onClick: () => openSourcePreferences({ sids }),
+            onClick: () =>
+                gid !== undefined
+                    ? openSourcePreferences({ gid })
+                    : openSourcePreferences({ sids }),
         },
     ]
     return <ContextMenuBase menuItems={menuItems} />

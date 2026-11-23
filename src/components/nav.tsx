@@ -20,7 +20,7 @@ import {
     openMarkAllMenu,
 } from "../scripts/models/app"
 import { toggleSearch } from "../scripts/models/page"
-import { WindowStateListenerType } from "../schema-types"
+import { ViewType, WindowStateListenerType } from "../schema-types"
 import { FlatButton } from "./utils/FlatButton"
 import { FlatButtonGroup } from "./utils/FlatButtonGroup"
 import { FlatButtonSeparator } from "./utils/FlatButtonSeparator"
@@ -34,6 +34,7 @@ import {
 const useClasses = makeStyles({
     nav: {
         "display": "flex",
+        "transition": "padding-left var(--transition-timing) 0.32s",
         "&.searching .refresh-status": { display: "none" },
         "@media (max-width: 1360px)": {
             "&.menu-on.searching .reading-controls, &.menu-on.searching #log-toggle, &.menu-on.searching #full-search-toggle":
@@ -101,17 +102,24 @@ const useClasses = makeStyles({
         flexShrink: 0,
         display: "inline-flex",
         alignItems: "center",
+        position: "relative",
+        zIndex: 2,
     },
     refreshStatus: {
         "display": "inline-block",
-        "maxWidth": "180px",
+        "maxWidth": "176px",
+        "marginRight": "4px",
         "overflow": "hidden",
         "textOverflow": "ellipsis",
         "whiteSpace": "nowrap",
         "verticalAlign": "middle",
         "fontSize": "12px",
         "color": "var(--neutralSecondary)",
-        "@media (max-width: 1000px)": { maxWidth: "95px" },
+        "WebkitAppRegion": "drag",
+        "@media (max-width: 1080px)": { maxWidth: "95px" },
+    },
+    notifyDot: {
+        color: "var(--primary)",
     },
 })
 
@@ -140,6 +148,7 @@ function hasOpenModalOrDialog(): boolean {
 
 const Nav: React.FC = () => {
     const searchOn = useAppSelector(state => state.page.searchOn)
+    const viewType = useAppSelector(state => state.page.viewType)
     const itemId = useAppSelector(state => state.page.itemId)
     const classes = useClasses()
     const dispatch = useAppDispatch()
@@ -152,6 +161,9 @@ const Nav: React.FC = () => {
         globalThis.utils.isFullscreen()
     )
     const isDarwin = globalThis.utils.platform === "darwin"
+
+    // Only floating search (non-ListView) shares horizontal space with <nav>.
+    const floatingSearchOn = searchOn && viewType !== ViewType.List
 
     const setBodyFullscreenState = useCallback((fullscreen: boolean) => {
         if (fullscreen) document.body.classList.remove("not-fullscreen")
@@ -221,14 +233,18 @@ const Nav: React.FC = () => {
 
             switch (e.key) {
                 case "F1":
-                    kb.preventDefault?.()
-                    kb.stopPropagation?.()
-                    menu()
+                    if (!articleOverlayOpen) {
+                        kb.preventDefault?.()
+                        kb.stopPropagation?.()
+                        menu()
+                    }
                     return
                 case "F2":
-                    kb.preventDefault?.()
-                    kb.stopPropagation?.()
-                    search()
+                    if (!articleOverlayOpen) {
+                        kb.preventDefault?.()
+                        kb.stopPropagation?.()
+                        search()
+                    }
                     return
                 case "F5":
                     kb.preventDefault?.()
@@ -357,7 +373,7 @@ const Nav: React.FC = () => {
                 classes.nav,
                 state.settings.display && "hide-btns",
                 state.menu && "menu-on",
-                searchOn && "searching",
+                floatingSearchOn && "searching",
                 articleOverlayOpen && "item-on",
                 isBlurred && classes.navBlurred
             )}>
@@ -370,7 +386,8 @@ const Nav: React.FC = () => {
                     <FlatButtonGroup styleClass={firstGroupClass}>
                         <FlatButton
                             styleClass={classes.navBtn}
-                            title={intl.get("nav.menu")}
+                            title={`${intl.get("nav.menu")} (F1)`}
+                            ariaLabel={intl.get("nav.menu")}
                             onClick={menu}>
                             <Icon
                                 iconName={
@@ -382,7 +399,9 @@ const Nav: React.FC = () => {
                 )}
                 <span
                     className="title"
-                    style={{ visibility: searchOn ? "hidden" : undefined }}>
+                    style={{
+                        visibility: floatingSearchOn ? "hidden" : undefined,
+                    }}>
                     {state.title}
                 </span>
                 <FlatButtonGroup styleClass={classes.navGroupRight}>
@@ -421,7 +440,8 @@ const Nav: React.FC = () => {
                                 fetching={isFetching}
                                 disabled={isFetching}
                                 onClick={fetch}
-                                title={intl.get("nav.refresh")}>
+                                title={`${intl.get("nav.refresh")} (F5)`}
+                                ariaLabel={intl.get("nav.refresh")}>
                                 <Icon iconName="Refresh" />
                             </FlatButton>
                             <FlatButton
@@ -429,6 +449,7 @@ const Nav: React.FC = () => {
                                 id="mark-all-toggle"
                                 onClick={markAll}
                                 title="快捷标为已读"
+                                ariaLabel="快捷标为已读"
                                 onMouseDown={e => {
                                     if (
                                         state.contextMenu.event ===
@@ -440,17 +461,22 @@ const Nav: React.FC = () => {
                             </FlatButton>
                             <FlatButton
                                 styleClass={classes.navBtn}
-                                title="筛选归档"
+                                title="筛选归档 (F6)"
+                                ariaLabel="筛选归档"
                                 onClick={() => openOrganize()}>
                                 <Icon iconName="Filter" />
                             </FlatButton>
                             <FlatButton
                                 styleClass={classes.navBtn}
                                 id="log-toggle"
-                                title={intl.get("nav.notifications")}
+                                title={`${intl.get("nav.notifications")} (F7)`}
+                                ariaLabel={intl.get("nav.notifications")}
                                 onClick={logs}>
                                 {state.logMenu.notify ? (
-                                    <Icon iconName="RingerSolid" />
+                                    <Icon
+                                        iconName="RingerSolid"
+                                        className={classes.notifyDot}
+                                    />
                                 ) : (
                                     <Icon iconName="Ringer" />
                                 )}
@@ -461,7 +487,8 @@ const Nav: React.FC = () => {
                             <FlatButton
                                 styleClass={classes.navBtn}
                                 id="view-toggle"
-                                title={intl.get("nav.view")}
+                                title={`${intl.get("nav.view")} (F8)`}
+                                ariaLabel={intl.get("nav.view")}
                                 onClick={views}
                                 onMouseDown={e => {
                                     if (
@@ -474,20 +501,24 @@ const Nav: React.FC = () => {
                             </FlatButton>
                             <FlatButton
                                 styleClass={classes.navBtn}
-                                title={intl.get("nav.settings")}
-                                onClick={settings}>
-                                <Icon iconName="Settings" />
-                            </FlatButton>
-                            <FlatButton
-                                styleClass={classes.navBtn}
-                                title={intl.get("personal.search")}
+                                title={`${intl.get(
+                                    "personal.search"
+                                )} (Ctrl+Shift+F)`}
+                                ariaLabel={intl.get("personal.search")}
                                 id="full-search-toggle"
                                 onClick={() =>
                                     window.dispatchEvent(
                                         new Event("personal-search")
                                     )
                                 }>
-                                <Icon iconName="SearchAndApps" />
+                                <Icon iconName="Search" />
+                            </FlatButton>
+                            <FlatButton
+                                styleClass={classes.navBtn}
+                                title={`${intl.get("nav.settings")} (F9)`}
+                                ariaLabel={intl.get("nav.settings")}
+                                onClick={settings}>
+                                <Icon iconName="Settings" />
                             </FlatButton>
                         </>
                     )}
@@ -505,6 +536,7 @@ const Nav: React.FC = () => {
                             systemItemOnClass
                         )}
                         title={intl.get("nav.minimize")}
+                        ariaLabel={intl.get("nav.minimize")}
                         onClick={minimize}>
                         <Icon iconName="Remove" />
                     </FlatButton>
@@ -516,6 +548,7 @@ const Nav: React.FC = () => {
                             systemItemOnClass
                         )}
                         title={intl.get("nav.maximize")}
+                        ariaLabel={intl.get("nav.maximize")}
                         onClick={maximize}>
                         {maximized ? (
                             <Icon
@@ -537,6 +570,7 @@ const Nav: React.FC = () => {
                             systemItemOnClass
                         )}
                         title={intl.get("close")}
+                        ariaLabel={intl.get("close")}
                         onClick={close}>
                         <Icon iconName="Cancel" />
                     </FlatButton>

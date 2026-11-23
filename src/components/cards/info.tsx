@@ -15,16 +15,6 @@ type CardInfoProps = {
     postLabel?: string
 }
 
-const badgeStyle: React.CSSProperties = {
-    maxWidth: 108,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    flexShrink: 0,
-    color: "var(--neutralSecondary)",
-    fontSize: 11,
-}
-
 const iconBadgeStyle: React.CSSProperties = {
     fontSize: 11,
     color: "var(--neutralSecondary)",
@@ -35,6 +25,18 @@ const CardInfo: React.FunctionComponent<CardInfoProps> = props => {
     const saved = useAppSelector(state =>
         state.library.saved.includes(props.item._id)
     )
+    const offlineTask = useAppSelector(
+        state => state.library.offlineTasks?.[props.item._id]
+    )
+    const hasNote = useAppSelector(state =>
+        Boolean(state.library.notedIds?.includes(props.item._id))
+    )
+    const inFolder = useAppSelector(state =>
+        Boolean(state.library.folderedIds?.includes(props.item._id))
+    )
+    const offlineRunning =
+        offlineTask?.state === "waiting" || offlineTask?.state === "running"
+
     return (
         <p className="info">
             {!props.hideSource && props.source.iconurl ? (
@@ -56,17 +58,34 @@ const CardInfo: React.FunctionComponent<CardInfoProps> = props => {
             {props.item.starred ? (
                 <span className="starred-indicator"></span>
             ) : null}
-            {!!props.item.tags?.length && (
-                <span style={badgeStyle} title={props.item.tags.join(", ")}>
-                    #{props.item.tags.join(" #")}
-                </span>
-            )}
-            {saved && (
+            {hasNote && !props.hideTime && (
                 <Icon
-                    iconName="OfflineStorage"
+                    iconName="EditNote"
                     style={iconBadgeStyle}
-                    title={intl.get("personal.savedOffline")}
+                    title="含文章备注"
                 />
+            )}
+            {inFolder && !props.hideTime && (
+                <Icon
+                    iconName="FolderHorizontal"
+                    style={iconBadgeStyle}
+                    title="已归入文章文件夹"
+                />
+            )}
+            {offlineRunning ? (
+                <Icon
+                    iconName="ProgressRingDots"
+                    style={{ ...iconBadgeStyle, color: "var(--primary)" }}
+                    title="正在保存离线网页…"
+                />
+            ) : (
+                saved && (
+                    <Icon
+                        iconName="OfflineStorage"
+                        style={iconBadgeStyle}
+                        title={intl.get("personal.savedOffline")}
+                    />
+                )
             )}
             {props.item.readLater && (
                 <Icon

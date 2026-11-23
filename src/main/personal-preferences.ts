@@ -72,6 +72,46 @@ export class PersonalPreferencesStore {
         ...this.store.get("personal", {} as PersonalSettings),
     })
 
+    addLoginHost(address: string): string {
+        const host = normalizeSiteHost(address)
+            .replace(/^\.+/, "")
+            .replace(/^www\./i, "")
+        const current = this.settings()
+        const existing = Array.isArray(current.loginHosts)
+            ? current.loginHosts
+            : []
+        if (!existing.includes(host)) {
+            this.store.set("personal", {
+                ...current,
+                loginHosts: [...existing, host].slice(-500),
+            })
+            this.changed()
+        }
+        return host
+    }
+
+    removeLoginHost(address: string) {
+        let host = ""
+        try {
+            host = normalizeSiteHost(address)
+                .replace(/^\.+/, "")
+                .replace(/^www\./i, "")
+        } catch {
+            return
+        }
+        const current = this.settings()
+        const existing = Array.isArray(current.loginHosts)
+            ? current.loginHosts
+            : []
+        const filtered = existing.filter(h => h !== host)
+        if (filtered.length !== existing.length) {
+            this.store.set("personal", {
+                ...current,
+                loginHosts: filtered,
+            })
+        }
+    }
+
     preferences = (): PreferenceOverrides =>
         this.store.get("sourcePreferences", { sources: {}, groups: {} })
 
@@ -96,7 +136,8 @@ export class PersonalPreferencesStore {
     savePreferences(
         target: { sids: number[] } | { gid: number },
         patch: Partial<SourcePreferences>,
-        clear: (keyof SourcePreferences)[] = []
+        clear: (keyof SourcePreferences)[] = [],
+        clearChildSources = false
     ): PreferenceOverrides {
         const valid = validateSourcePreferences(patch)
         if (
@@ -115,6 +156,7 @@ export class PersonalPreferencesStore {
             (!Array.isArray(sids) || !sids.length || sids.length > 1000)
         )
             throw new Error("所选订阅源列表无效。")
+        const sourceGroups = this.store.get("sourceGroups", [])
         const ids = sids || [target["gid"]]
         const map = sids ? next.sources : next.groups
         for (const id of ids) {
@@ -124,15 +166,21 @@ export class PersonalPreferencesStore {
                     ? !this.sqlite
                           .prepare("SELECT sid FROM sources WHERE sid=?")
                           .get(id)
-                    : !this.store
-                          .get("sourceGroups", [])
-                          .some(group => group.gid === id && group.isMultiple))
+                    : !sourceGroups.some(
+                          group => group.gid === id && group.isMultiple
+                      ))
             )
                 throw new Error("所选订阅源或分组已不存在。")
             const values = { ...map[id], ...valid }
             for (const key of clear) delete values[key]
             if (Object.keys(values).length > 0) map[id] = values
             else delete map[id]
+        }
+        if ("gid" in target && clearChildSources) {
+            const group = sourceGroups.find(g => g.gid === target.gid)
+            for (const childSid of group?.sids || []) {
+                delete next.sources[childSid]
+            }
         }
         this.store.set("sourcePreferences", next)
         this.changed()
@@ -146,19 +194,39 @@ export class PersonalPreferencesStore {
             value.siteRules.length > 200
         )
             throw new Error("自用功能设置格式无效。")
+        const currentSettings = this.settings()
+        const rawLoginHosts = Array.isArray(value.loginHosts)
+            ? value.loginHosts
+            : currentSettings.loginHosts || []
+        const loginHosts = [
+            ...new Set(
+                rawLoginHosts
+                    .map(h => {
+                        try {
+                            return normalizeSiteHost(h)
+                                .replace(/^\.+/, "")
+                                .replace(/^www\./i, "")
+                        } catch {
+                            return ""
+                        }
+                    })
+                    .filter(Boolean)
+            ),
+        ].slice(0, 500)
         const next: PersonalSettings = {
             domainInterval: Number(value.domainInterval),
             concurrency: Number(value.concurrency),
             backupFolder: String(value.backupFolder || ""),
             backupSchedule: value.backupSchedule,
             backupKeep: Number(value.backupKeep),
-            lastBackup: this.settings().lastBackup,
+            lastBackup: currentSettings.lastBackup,
             offlineFolder: String(value.offlineFolder || ""),
             removeLaterOnRead: !!value.removeLaterOnRead,
             rssHub: httpURL(
                 value.rssHub || defaultPersonalSettings.rssHub
             ).href.replace(/\/$/, ""),
             staleDays: Number(value.staleDays),
+            loginHosts,
             siteRules: value.siteRules.map(rule => ({
                 host: normalizeSiteHost(rule.host),
                 container: validateCssSelector(

@@ -8,7 +8,13 @@ import {
     initSources,
     updateFavicon,
 } from "./source"
-import { RSSItem, ItemActionTypes, FETCH_ITEMS, fetchItems } from "./item"
+import {
+    RSSItem,
+    ItemActionTypes,
+    FETCH_ITEMS,
+    MARK_ALL_READ,
+    fetchItems,
+} from "./item"
 import {
     ActionStatus,
     AppThunk,
@@ -72,6 +78,51 @@ export class AppLog {
     }
 }
 
+const UNSEEN_STORAGE_KEY = "personal:unseenDelta"
+
+function loadStoredUnseen(): {
+    bySource: Record<number, number>
+    all: number
+} {
+    try {
+        const raw = localStorage.getItem(UNSEEN_STORAGE_KEY)
+        if (!raw) return { bySource: {}, all: 0 }
+        const parsed = JSON.parse(raw)
+        const bySource: Record<number, number> = {}
+        if (parsed?.bySource && typeof parsed.bySource === "object") {
+            for (const [k, v] of Object.entries(parsed.bySource)) {
+                const sid = Number(k)
+                const n = Number(v)
+                if (Number.isInteger(sid) && n > 0) bySource[sid] = n
+            }
+        }
+        return {
+            bySource,
+            all: Math.max(0, Number(parsed?.all) || 0),
+        }
+    } catch {
+        return { bySource: {}, all: 0 }
+    }
+}
+
+function saveStoredUnseen(bySource: Record<number, number>, all: number) {
+    try {
+        localStorage.setItem(
+            UNSEEN_STORAGE_KEY,
+            JSON.stringify({ bySource, all })
+        )
+    } catch {
+        // Ignore storage quota errors.
+    }
+}
+
+export type GroupMenuTarget =
+    | number[]
+    | {
+          sids: number[]
+          gid?: number
+      }
+
 export class AppState {
     locale = null as string
     sourceInit = false
@@ -85,6 +136,8 @@ export class AppState {
     refreshCompletedAt = 0
     refreshAdded = 0
     refreshFailures = 0
+    unseenBySource: Record<number, number>
+    unseenAll: number
     menu = getWindowBreakpoint() && window.settings.getDefaultMenu()
     menuKey = ALL
     title = ""
@@ -104,10 +157,13 @@ export class AppState {
         type: ContextMenuType
         event?: MouseEvent | string
         position?: [number, number]
-        target?: [RSSItem, string] | number[] | [string, string]
+        target?: [RSSItem, string] | GroupMenuTarget | [string, string]
     }
 
     constructor() {
+        const initialUnseen = loadStoredUnseen()
+        this.unseenBySource = initialUnseen.bySource
+        this.unseenAll = initialUnseen.all
         this.contextMenu = {
             type: ContextMenuType.Hidden,
         }
@@ -151,6 +207,7 @@ interface OpenGroupMenuAction {
     type: typeof OPEN_GROUP_MENU
     event: MouseEvent
     sids: number[]
+    gid?: number
 }
 
 interface OpenImageMenuAction {
@@ -168,10 +225,15 @@ export type ContextMenuActionTypes =
     | OpenMarkAllMenuAction
 
 export const TOGGLE_LOGS = "TOGGLE_LOGS"
+export const CLEAR_LOGS = "CLEAR_LOGS"
 export const PUSH_NOTIFICATION = "PUSH_NOTIFICATION"
 
 interface ToggleLogMenuAction {
     type: typeof TOGGLE_LOGS
+}
+
+interface ClearLogsAction {
+    type: typeof CLEAR_LOGS
 }
 
 interface PushNotificationAction {
@@ -181,7 +243,10 @@ interface PushNotificationAction {
     source: string
 }
 
-export type LogMenuActionType = ToggleLogMenuAction | PushNotificationAction
+export type LogMenuActionType =
+    | ToggleLogMenuAction
+    | ClearLogsAction
+    | PushNotificationAction
 
 export const TOGGLE_MENU = "TOGGLE_MENU"
 
@@ -249,12 +314,14 @@ export const openViewMenu = (): ContextMenuActionTypes => ({
 
 export function openGroupMenu(
     sids: number[],
-    event: React.MouseEvent
+    event: React.MouseEvent,
+    gid?: number
 ): ContextMenuActionTypes {
     return {
         type: OPEN_GROUP_MENU,
         event: event.nativeEvent,
         sids: sids,
+        gid,
     }
 }
 
@@ -278,8 +345,9 @@ export function toggleMenu(): AppThunk {
     }
 }
 
-export const toggleLogMenu = () => ({ type: TOGGLE_LOGS })
-export const saveSettings = () => ({ type: SAVE_SETTINGS })
+export const toggleLogMenu = () => ({ type: TOGGLE_LOGS } as const)
+export const clearLogs = () => ({ type: CLEAR_LOGS } as const)
+export const saveSettings = () => ({ type: SAVE_SETTINGS } as const)
 
 export const toggleSettings = (open = true, sids = new Array<number>()) => ({
     type: TOGGLE_SETTINGS,
@@ -375,10 +443,7 @@ export function pushNotification(item: RSSItem): AppThunk {
             getState().sources[item.source]?.name ||
             intl.get("sources.untitled")
         void window.personal.notifyItem(item._id).catch(error => {
-            window.utils.showErrorBox(
-                intl.get("personal.failed"),
-                String(error)
-            )
+            console.error(error)
         })
         dispatch({
             type: PUSH_NOTIFICATION,
@@ -503,8 +568,23 @@ export function appReducer(
                         },
                     }
             }
+        case DELETE_SOURCE: {
+            const nextBySource = { ...state.unseenBySource }
+            const removed = nextBySource[action.source.sid] || 0
+            delete nextBySource[action.source.sid]
+            const nextAll = Math.max(0, state.unseenAll - removed)
+            saveStoredUnseen(nextBySource, nextAll)
+            return {
+                ...state,
+                unseenBySource: nextBySource,
+                unseenAll: nextAll,
+                settings: {
+                    ...state.settings,
+                    changed: true,
+                },
+            }
+        }
         case UPDATE_SOURCE:
-        case DELETE_SOURCE:
         case UPDATE_SOURCE_GROUP:
         case ADD_SOURCE_TO_GROUP:
         case REMOVE_SOURCE_FROM_GROUP:
@@ -543,7 +623,7 @@ export function appReducer(
                             ...state.logMenu,
                             notify: true,
                             logs: [
-                                ...state.logMenu.logs,
+                                ...state.logMenu.logs.slice(-99),
                                 new AppLog(
                                     AppLogType.Failure,
                                     intl.get("log.syncFailure"),
@@ -592,7 +672,7 @@ export function appReducer(
                             ...state.logMenu,
                             notify: !state.logMenu.display,
                             logs: [
-                                ...state.logMenu.logs,
+                                ...state.logMenu.logs.slice(-99),
                                 new AppLog(
                                     AppLogType.Failure,
                                     intl.get("log.fetchFailure", {
@@ -605,28 +685,34 @@ export function appReducer(
                             ],
                         },
                     }
-                case ActionStatus.Success:
+                case ActionStatus.Success: {
+                    const isFocused = globalThis.utils?.isFocused?.() ?? true
+                    const nextBySource = { ...state.unseenBySource }
+                    let nextAll = state.unseenAll
+                    for (const item of action.items) {
+                        if (item.hasRead || item.hidden || item.feedHidden)
+                            continue
+                        const viewingSource =
+                            isFocused && state.menuKey === "s-" + item.source
+                        if (!viewingSource) {
+                            nextBySource[item.source] =
+                                (nextBySource[item.source] || 0) + 1
+                        }
+                        const viewingAll = isFocused && state.menuKey === ALL
+                        if (!viewingAll) {
+                            nextAll += 1
+                        }
+                    }
+                    saveStoredUnseen(nextBySource, nextAll)
                     return {
                         ...state,
                         refreshAdded: state.refreshAdded + action.items.length,
+                        unseenBySource: nextBySource,
+                        unseenAll: nextAll,
                         fetchingItems: false,
                         fetchingTotal: 0,
-                        logMenu:
-                            action.items.length == 0
-                                ? state.logMenu
-                                : {
-                                      ...state.logMenu,
-                                      logs: [
-                                          ...state.logMenu.logs,
-                                          new AppLog(
-                                              AppLogType.Info,
-                                              intl.get("log.fetchSuccess", {
-                                                  count: action.items.length,
-                                              })
-                                          ),
-                                      ],
-                                  },
                     }
+                }
                 case ActionStatus.Intermediate:
                     return {
                         ...state,
@@ -635,22 +721,73 @@ export function appReducer(
                 default:
                     return state
             }
+        case MARK_ALL_READ: {
+            if (!action.time) {
+                const nextBySource = { ...state.unseenBySource }
+                let nextAll = state.unseenAll
+                if (!action.sids?.length && !action.itemIds) {
+                    nextAll = 0
+                    for (const k of Object.keys(nextBySource))
+                        delete nextBySource[Number(k)]
+                } else if (action.sids?.length) {
+                    let cleared = 0
+                    for (const sid of action.sids) {
+                        cleared += nextBySource[sid] || 0
+                        delete nextBySource[sid]
+                    }
+                    nextAll =
+                        state.menuKey === ALL
+                            ? 0
+                            : Math.max(0, nextAll - cleared)
+                }
+                saveStoredUnseen(nextBySource, nextAll)
+                return {
+                    ...state,
+                    unseenBySource: nextBySource,
+                    unseenAll: nextAll,
+                }
+            }
+            return state
+        }
         case SELECT_PAGE:
             switch (action.pageType) {
-                case PageType.AllArticles:
+                case PageType.AllArticles: {
+                    saveStoredUnseen(state.unseenBySource, 0)
                     return {
                         ...state,
+                        unseenAll: 0,
                         menu: state.menu && action.keepMenu,
                         menuKey: ALL,
                         title: intl.get("allArticles"),
                     }
-                case PageType.Sources:
+                }
+                case PageType.Sources: {
+                    const nextBySource = { ...state.unseenBySource }
+                    let cleared = 0
+                    if (action.menuKey?.startsWith("s-")) {
+                        const sid = Number(action.menuKey.slice(2))
+                        cleared += nextBySource[sid] || 0
+                        delete nextBySource[sid]
+                    } else if (
+                        action.menuKey?.startsWith("g-") &&
+                        action.sids?.length
+                    ) {
+                        for (const sid of action.sids) {
+                            cleared += nextBySource[sid] || 0
+                            delete nextBySource[sid]
+                        }
+                    }
+                    const nextAll = Math.max(0, state.unseenAll - cleared)
+                    saveStoredUnseen(nextBySource, nextAll)
                     return {
                         ...state,
+                        unseenBySource: nextBySource,
+                        unseenAll: nextAll,
                         menu: state.menu && action.keepMenu,
                         menuKey: action.menuKey,
                         title: action.title,
                     }
+                }
             }
         case CLOSE_CONTEXT_MENU:
             return {
@@ -694,7 +831,10 @@ export function appReducer(
                 contextMenu: {
                     type: ContextMenuType.Group,
                     event: action.event,
-                    target: action.sids,
+                    target:
+                        action.gid !== undefined
+                            ? { sids: action.sids, gid: action.gid }
+                            : action.sids,
                 },
             }
         case OPEN_IMAGE_MENU:
@@ -750,6 +890,15 @@ export function appReducer(
                     notify: false,
                 },
             }
+        case CLEAR_LOGS:
+            return {
+                ...state,
+                logMenu: {
+                    ...state.logMenu,
+                    notify: false,
+                    logs: [],
+                },
+            }
         case PUSH_NOTIFICATION:
             return {
                 ...state,
@@ -757,7 +906,7 @@ export function appReducer(
                     ...state.logMenu,
                     notify: true,
                     logs: [
-                        ...state.logMenu.logs,
+                        ...state.logMenu.logs.slice(-99),
                         new AppLog(
                             AppLogType.Article,
                             action.title,

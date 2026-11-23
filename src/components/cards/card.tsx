@@ -53,8 +53,10 @@ export namespace Card {
                 break
             }
             default: {
-                props.markRead(props.item)
+                // Set active itemId first so markRead defers removeLaterOnRead
+                // until the user finishes reading and moves away from this item.
                 props.showItem(props.feedId, props.item)
+                props.markRead(props.item)
                 break
             }
         }

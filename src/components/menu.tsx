@@ -31,6 +31,21 @@ import { MenuCollectionsSection } from "./menu/MenuCollectionsSection"
 import { MenuFoldersAndTagsSection } from "./menu/MenuFoldersAndTagsSection"
 import { MenuSubscriptionsSection } from "./menu/MenuSubscriptionsSection"
 
+const OPEN_FOLDERS_KEY = "personal:openFolders"
+
+function loadOpenFolders(): Set<string> {
+    try {
+        const raw = localStorage.getItem(OPEN_FOLDERS_KEY)
+        if (!raw) return new Set()
+        const arr = JSON.parse(raw)
+        return Array.isArray(arr)
+            ? new Set(arr.filter(v => typeof v === "string"))
+            : new Set()
+    } catch {
+        return new Set()
+    }
+}
+
 const useMenuClasses = makeStyles({
     menuBtn: {
         height: "var(--navHeight)",
@@ -40,11 +55,12 @@ const useMenuClasses = makeStyles({
         color: "var(--neutralSecondaryAlt)",
     },
     menuGroupDarwin: {
-        display: "flex",
-        flexDirection: "row-reverse",
+        display: "inline-flex",
+        float: "right",
     },
     menuHeader: {
         height: "var(--navHeight)",
+        WebkitAppRegion: "drag",
     },
     menuContainer: {
         "position": "fixed",
@@ -113,7 +129,8 @@ const useMenuClasses = makeStyles({
 
 export const Menu: React.FC = () => {
     const { folders } = useFolders()
-    const [openFoldersSet, setOpenFoldersSet] = useState(new Set<string>())
+    const [openFoldersSet, setOpenFoldersSet] =
+        useState<Set<string>>(loadOpenFolders)
     const dispatch = useAppDispatch()
     const menuClasses = useMenuClasses()
     const { findFirstFocusable } = useFocusFinders()
@@ -129,8 +146,10 @@ export const Menu: React.FC = () => {
     const sources = useAppSelector(s => s.sources)
     const groups = useAppSelector(s => s.groups)
     const searchOn = useAppSelector(s => s.page.searchOn)
+    const unseenAll = useAppSelector(s => s.app.unseenAll)
+    const unseenBySource = useAppSelector(s => s.app.unseenBySource)
     const articleOverlayOpen = useArticleOverlayOpen()
-    const { tags, counts } = useMenuCollections()
+    const { counts } = useMenuCollections()
 
     const openItems = useMemo(
         () =>
@@ -175,8 +194,8 @@ export const Menu: React.FC = () => {
         [dispatch]
     )
     const handleGroupContextMenu = useCallback(
-        (sids: number[], event: React.MouseEvent) => {
-            dispatch(openGroupMenu(sids, event))
+        (sids: number[], event: React.MouseEvent, gid?: number) => {
+            dispatch(openGroupMenu(sids, event, gid))
         },
         [dispatch]
     )
@@ -198,6 +217,14 @@ export const Menu: React.FC = () => {
                         const next = new Set(old)
                         if (next.has(value)) next.delete(value)
                         else next.add(value)
+                        try {
+                            localStorage.setItem(
+                                OPEN_FOLDERS_KEY,
+                                JSON.stringify([...next])
+                            )
+                        } catch {
+                            // Ignore quota errors.
+                        }
                         return next
                     })
             }
@@ -254,7 +281,7 @@ export const Menu: React.FC = () => {
                                         ? menuClasses.menuBtnBlurred
                                         : undefined
                                 )}
-                                title={intl.get("menu.close")}
+                                title={`${intl.get("menu.close")} (F1)`}
                                 ariaLabel={intl.get("menu.close")}
                                 onClick={handleToggleMenu}>
                                 {isWideScreen ? (
@@ -284,6 +311,7 @@ export const Menu: React.FC = () => {
                             selected={selected}
                             searchOn={searchOn}
                             totalUnread={totalUnread}
+                            unseenAll={unseenAll}
                             counts={counts}
                             onToggleSearch={handleToggleSearch}
                             onAllArticles={handleAllArticles}
@@ -291,12 +319,13 @@ export const Menu: React.FC = () => {
                         <MenuFoldersAndTagsSection
                             selected={selected}
                             folders={folders}
-                            tags={tags}
+                            unfiledCount={counts.unfiled}
                         />
                         <MenuSubscriptionsSection
                             selected={selected}
                             groups={groups}
                             sources={sources}
+                            unseenBySource={unseenBySource}
                             onSelectGroup={handleSelectSourceGroup}
                             onSelectSource={handleSelectSource}
                             onContextMenu={handleGroupContextMenu}

@@ -39,13 +39,16 @@ export function useFolders() {
     }, [])
     return { folders, error }
 }
+
 export function folderLabel(folder: ArticleFolder, folders: ArticleFolder[]) {
     const parent = folders.find(f => f.id === folder.parentId)
     return parent ? parent.name + " / " + folder.name : folder.name
 }
+
 export function FolderPicker({
     value,
     onChange,
+    memberIds,
     suggestion = "",
     disabled = false,
     compact = false,
@@ -53,6 +56,7 @@ export function FolderPicker({
 }: {
     value?: number
     onChange: (id: number) => void
+    memberIds?: number[]
     suggestion?: string
     disabled?: boolean
     compact?: boolean
@@ -69,12 +73,13 @@ export function FolderPicker({
         .split(/[,，;；\n]/)[0]
         .trim()
         .slice(0, 100)
-    async function create(name: string) {
+
+    async function create(folderName: string) {
         setBusy(true)
         setMessage("")
         try {
             const id = await window.personal.archiveSaveFolder({
-                name,
+                name: folderName,
                 parentId: parent || null,
             })
             onChange(id)
@@ -86,6 +91,7 @@ export function FolderPicker({
             setBusy(false)
         }
     }
+
     const filteredOptions = folders
         .filter(
             f =>
@@ -94,7 +100,15 @@ export function FolderPicker({
                     .toLocaleLowerCase()
                     .includes(search.toLocaleLowerCase())
         )
-        .map(f => ({ key: f.id, text: folderLabel(f, folders) }))
+        .map(f => {
+            const inMember = memberIds?.includes(f.id)
+            const base = folderLabel(f, folders)
+            return {
+                key: f.id,
+                text: inMember ? `✓ ${base}（已归入）` : base,
+            }
+        })
+
     return (
         <div style={{ display: "grid", gap: 8, minWidth: 200 }}>
             {(!compact || folders.length > 8) && (
@@ -102,7 +116,7 @@ export function FolderPicker({
                     ariaLabel="查找文件夹"
                     placeholder="查找文件夹"
                     value={search}
-                    onChange={(_, v) => setSearch(v)}
+                    onChange={(_, v) => setSearch(v || "")}
                     disabled={disabled}
                 />
             )}
@@ -114,15 +128,21 @@ export function FolderPicker({
                         alignItems: "center",
                         flexWrap: "wrap",
                     }}>
-                    <Dropdown
-                        ariaLabel="目标文件夹"
-                        selectedKey={value ?? null}
-                        disabled={disabled || busy}
-                        placeholder="选择归类文件夹…"
-                        styles={{ root: { minWidth: 200, flexGrow: 1 } }}
-                        options={filteredOptions}
-                        onChange={(_, o) => onChange(Number(o.key))}
-                    />
+                    {folders.length > 0 && (
+                        <Dropdown
+                            ariaLabel="目标文件夹"
+                            selectedKey={value ?? null}
+                            disabled={disabled || busy}
+                            placeholder={
+                                memberIds
+                                    ? "选择文件夹直接归入或移出…"
+                                    : "选择归类文件夹…"
+                            }
+                            styles={{ root: { minWidth: 200, flexGrow: 1 } }}
+                            options={filteredOptions}
+                            onChange={(_, o) => o && onChange(Number(o.key))}
+                        />
+                    )}
                     <DefaultButton
                         disabled={disabled || busy}
                         onClick={() => {
@@ -148,7 +168,7 @@ export function FolderPicker({
                         disabled={disabled || busy}
                         placeholder="选择文件夹"
                         options={filteredOptions}
-                        onChange={(_, o) => onChange(Number(o.key))}
+                        onChange={(_, o) => o && onChange(Number(o.key))}
                     />
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <DefaultButton
@@ -175,7 +195,7 @@ export function FolderPicker({
                     <TextField
                         label="文件夹名称"
                         value={name}
-                        onChange={(_, v) => setName(v)}
+                        onChange={(_, v) => setName(v || "")}
                         disabled={busy}
                     />
                     <Dropdown
@@ -187,7 +207,7 @@ export function FolderPicker({
                                 .filter(f => f.parentId === null)
                                 .map(f => ({ key: f.id, text: f.name })),
                         ]}
-                        onChange={(_, o) => setParent(Number(o.key))}
+                        onChange={(_, o) => o && setParent(Number(o.key))}
                     />
                     <PrimaryButton
                         disabled={busy || !name.trim()}
@@ -220,9 +240,9 @@ export function FolderManager() {
     const [message, setMessage] = useState(""),
         [removing, setRemoving] = useState(false),
         [busy, setBusy] = useState(false)
-    const choose = (id: number) => {
-        const f = folders.find(f => f.id === id)
-        setId(id)
+    const choose = (targetId: number) => {
+        const f = folders.find(item => item.id === targetId)
+        setId(targetId)
         setName(f?.name || "")
         setParent(f?.parentId || 0)
         setRemoving(false)
@@ -292,12 +312,12 @@ export function FolderManager() {
                             text: folderLabel(f, folders),
                         })),
                     ]}
-                    onChange={(_, o) => choose(Number(o.key))}
+                    onChange={(_, o) => o && choose(Number(o.key))}
                 />
                 <TextField
                     label="文件夹名称"
                     value={name}
-                    onChange={(_, v) => setName(v)}
+                    onChange={(_, v) => setName(v || "")}
                 />
                 <Dropdown
                     label="上级文件夹"
@@ -308,7 +328,7 @@ export function FolderManager() {
                             .filter(f => f.parentId === null && f.id !== id)
                             .map(f => ({ key: f.id, text: f.name })),
                     ]}
-                    onChange={(_, o) => setParent(Number(o.key))}
+                    onChange={(_, o) => o && setParent(Number(o.key))}
                 />
                 {removing && (
                     <>
@@ -332,7 +352,7 @@ export function FolderManager() {
                                         text: folderLabel(f, folders),
                                     })),
                             ]}
-                            onChange={(_, o) => setMoveTo(Number(o.key))}
+                            onChange={(_, o) => o && setMoveTo(Number(o.key))}
                         />
                         <PrimaryButton
                             disabled={busy}

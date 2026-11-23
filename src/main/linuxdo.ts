@@ -1,10 +1,12 @@
 import { BrowserWindow } from "electron"
 import type Store from "electron-store"
 import type { SchemaTypes } from "../schema-types"
+import type { ForumFloor } from "../personal-types"
 import { DomainQueue, RequestError } from "./domain-queue"
-import { secureWebWindow } from "./web-content"
+import { cleanHTML, secureWebWindow } from "./web-content"
 import {
     LINUXDO,
+    isLinuxDo,
     categoryChoices,
     tagChoices,
     topicRSS,
@@ -85,7 +87,7 @@ export class LinuxDo {
         const address = new URL(path, LINUXDO)
         if (
             address.origin !== LINUXDO ||
-            !/^\/(?:session\/current|site|categories|tags(?:\/filter\/search)?|latest|c\/[^/]+\/\d+|tag\/[^/]+(?:\/\d+)?)\.json$/.test(
+            !/^\/(?:session\/current|site|categories|tags(?:\/filter\/search)?|latest|t\/\d+|c\/[^/]+\/\d+|tag\/[^/]+(?:\/\d+)?)\.json$/.test(
                 address.pathname
             ) ||
             (address.search &&
@@ -153,6 +155,43 @@ export class LinuxDo {
                 )
             }
         })
+    }
+
+    async replies(url: string): Promise<ForumFloor[]> {
+        const raw = String(url || "").trim()
+        if (!isLinuxDo(raw)) {
+            throw new Error("仅支持读取 Linux.do 帖子评论。")
+        }
+        const parsed = new URL(raw)
+        const match = /\/t\/(?:[^/]+\/)?(\d+)/.exec(parsed.pathname)
+        if (!match) {
+            throw new Error("无法从帖子链接中解析话题编号。")
+        }
+        const topicId = match[1]
+        const data = await this.json(`/t/${topicId}.json`)
+        const posts = Array.isArray(data?.post_stream?.posts)
+            ? data.post_stream.posts
+            : []
+        return posts
+            .filter(
+                (p: any) =>
+                    p && typeof p.post_number === "number" && p.post_number > 1
+            )
+            .slice(0, 30)
+            .map(
+                (p: any): ForumFloor => ({
+                    floor: p.post_number,
+                    author: String(p.name || p.username || ""),
+                    createdAt: String(p.created_at || ""),
+                    html: cleanHTML(String(p.cooked || ""), LINUXDO),
+                    likes: Number(
+                        p.actions_summary?.find((a: any) => a?.id === 2)
+                            ?.count ||
+                            p.like_count ||
+                            0
+                    ),
+                })
+            )
     }
 
     async catalog(kind: "categories" | "tags", query = "") {

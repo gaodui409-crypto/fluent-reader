@@ -57,6 +57,12 @@ const useTreeItemClasses = makeStyles({
         fontSize: "12px",
         fontVariantNumeric: "tabular-nums",
         flexShrink: 0,
+        whiteSpace: "nowrap",
+    },
+    deltaBadge: {
+        color: tokens.colorCompoundBrandForeground1,
+        marginLeft: "3px",
+        fontWeight: tokens.fontWeightSemibold,
     },
 })
 
@@ -70,6 +76,7 @@ export interface MenuTreeItemProps {
     isSelected?: boolean
     icon?: React.ReactElement
     unreadCount?: number
+    deltaCount?: number
     aside?: React.ReactElement
     onClick: () => void
     onContextMenu?: (e: React.MouseEvent) => void
@@ -83,6 +90,7 @@ export const MenuTreeItem: React.FC<MenuTreeItemProps> = ({
     isSelected = false,
     icon,
     unreadCount,
+    deltaCount,
     aside,
     onClick,
     onContextMenu,
@@ -97,9 +105,22 @@ export const MenuTreeItem: React.FC<MenuTreeItemProps> = ({
 
     let resolvedAside: React.ReactElement | undefined = aside
     if (resolvedAside === undefined && unreadCount && unreadCount > 0) {
+        const shownDelta =
+            deltaCount && deltaCount > 0 ? Math.min(deltaCount, unreadCount) : 0
         resolvedAside = (
-            <span className={c.unreadCount}>
+            <span
+                className={c.unreadCount}
+                title={
+                    shownDelta > 0
+                        ? `当前未读 ${unreadCount} 篇，距上次查看新增 ${shownDelta} 篇`
+                        : undefined
+                }>
                 {unreadCount >= 1000 ? "999+" : String(unreadCount)}
+                {shownDelta > 0 && (
+                    <span className={c.deltaBadge}>
+                        (+{shownDelta >= 999 ? "999+" : shownDelta})
+                    </span>
+                )}
             </span>
         )
     }
@@ -129,7 +150,19 @@ export const MenuTreeItem: React.FC<MenuTreeItemProps> = ({
                       }
                     : undefined
             }
-            onDragLeave={onDrop ? () => setDragOver(false) : undefined}
+            onDragLeave={
+                onDrop
+                    ? e => {
+                          if (
+                              !e.currentTarget.contains(
+                                  e.relatedTarget as Node | null
+                              )
+                          ) {
+                              setDragOver(false)
+                          }
+                      }
+                    : undefined
+            }
             onDrop={
                 onDrop
                     ? e => {
@@ -171,9 +204,9 @@ export const SafeFavicon: React.FC<{ src?: string; className?: string }> = ({
     if (!src || failed) return null
     return (
         <img
-            alt=""
-            className={className}
             src={src}
+            className={className}
+            alt=""
             onError={() => setFailed(true)}
         />
     )

@@ -1,5 +1,7 @@
 import * as React from "react"
 import { useEffect, useState } from "react"
+import intl from "react-intl-universal"
+import { Icon } from "@fluentui/react"
 import { Card } from "./card"
 import CardInfo from "./info"
 import Highlights from "./highlights"
@@ -13,9 +15,41 @@ import { selectArticle } from "../../scripts/models/organize"
 import { makeStyles, mergeClasses } from "@griffel/react"
 
 const useStyles = makeStyles({
+    root: {
+        "&:hover .list-check-btn, &:focus-within .list-check-btn": {
+            opacity: 1,
+        },
+    },
     batchSelected: {
         backgroundColor: "var(--neutralLighter)",
-        boxShadow: "inset 3px 0 0 var(--primary)",
+    },
+    checkBtn: {
+        "position": "absolute",
+        "right": "8px",
+        "bottom": "6px",
+        "zIndex": 2,
+        "border": "1px solid var(--neutralQuaternaryAlt)",
+        "backgroundColor": "var(--white)",
+        "color": "var(--neutralSecondary)",
+        "borderRadius": "4px",
+        "width": "22px",
+        "height": "22px",
+        "padding": 0,
+        "display": "inline-flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+        "cursor": "pointer",
+        "opacity": 0,
+        "transition": "opacity 0.12s ease",
+        ":hover": {
+            color: "var(--primary)",
+            border: "1px solid var(--primary)",
+        },
+    },
+    checkBtnActive: {
+        opacity: 1,
+        color: "var(--primary)",
+        border: "1px solid var(--primary)",
     },
     thumbImg: {
         borderRadius: "4px",
@@ -43,13 +77,6 @@ const useStyles = makeStyles({
             borderRadius: "5px",
         },
         "& p.snippet": { WebkitLineClamp: 1 },
-        "& .info > span[title]": {
-            maxWidth: "100px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: "11px",
-        },
     },
 })
 
@@ -69,6 +96,7 @@ const ListCard: React.FunctionComponent<Card.Props> = props => {
     const batchSelected = useAppSelector(s =>
         s.organize.selected.includes(props.item._id)
     )
+    const anySelected = useAppSelector(s => s.organize.selected.length > 0)
     const single = useAppSelector(
         s => s.app.menuKey === "s-" + props.source.sid
     )
@@ -82,14 +110,24 @@ const ListCard: React.FunctionComponent<Card.Props> = props => {
     const post = forum ? forumPost(props.item.link) : null
     const events = Card.bindEventsToProps(props)
 
+    const combinedStyle: React.CSSProperties | undefined = (() => {
+        const shadows: string[] = []
+        if (props.item.highlight)
+            shadows.push(`inset 4px 0 ${props.item.highlight}`)
+        if (batchSelected) shadows.push("inset 0 0 0 2px var(--primary)")
+        return shadows.length ? { boxShadow: shadows.join(", ") } : undefined
+    })()
+
     return (
         <div
             className={mergeClasses(
                 className(props),
+                classes.root,
                 forum && classes.forum,
                 batchSelected && classes.batchSelected
             )}
             {...events}
+            style={combinedStyle}
             onClick={event => {
                 if (event.ctrlKey || event.metaKey || event.shiftKey) {
                     event.preventDefault()
@@ -152,6 +190,29 @@ const ListCard: React.FunctionComponent<Card.Props> = props => {
                     </p>
                 )}
             </div>
+            <button
+                type="button"
+                className={mergeClasses(
+                    "list-check-btn",
+                    classes.checkBtn,
+                    (batchSelected || anySelected) && classes.checkBtnActive
+                )}
+                title={intl.get("organize.selectHint")}
+                aria-label={intl.get(
+                    batchSelected ? "organize.deselect" : "organize.select"
+                )}
+                onClick={e => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    dispatch(selectArticle(props.item._id, e.shiftKey))
+                }}
+                onMouseUp={e => e.stopPropagation()}
+                onKeyDown={e => e.stopPropagation()}>
+                <Icon
+                    iconName={batchSelected ? "CheckboxComposite" : "Checkbox"}
+                    style={{ fontSize: 12 }}
+                />
+            </button>
         </div>
     )
 }

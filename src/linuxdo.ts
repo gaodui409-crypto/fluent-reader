@@ -150,14 +150,9 @@ export function topicRSS(data: any, url: string, title: string): string {
                     Number.isFinite(date)
                         ? `<pubDate>${new Date(date).toUTCString()}</pubDate>`
                         : ""
-                }<dc:creator>${escapeXML(author)}</dc:creator>${(t.tags || [])
-                    .map(
-                        t =>
-                            `<category>${escapeXML(
-                                typeof t === "string" ? t : t.name
-                            )}</category>`
-                    )
-                    .join("")}<description>${escapeXML(
+                }<dc:creator>${escapeXML(
+                    author
+                )}</dc:creator><description>${escapeXML(
                     content
                 )}</description></item>`
             })

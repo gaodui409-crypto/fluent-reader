@@ -10,12 +10,16 @@ import { useAppSelector } from "../../scripts/reducer"
 import { ContextMenuBase, getSearchItem } from "./shared"
 
 export function TextContextMenu() {
-    const target = useAppSelector(state => state.app.contextMenu.target) as [
-        string,
-        string
-    ]
+    const contextMenu = useAppSelector(state => state.app.contextMenu)
+    const hasOpenArticle = useAppSelector(
+        state => state.page.itemId !== null && !state.app.settings.display
+    )
+    const target = contextMenu.target as [string, string]
+    const position = contextMenu.position
     const text = target?.[0] || ""
     const url = target?.[1] || ""
+    const trimmedText = text.trim()
+
     const menuItems: IContextualMenuItem[] = text
         ? [
               {
@@ -26,6 +30,41 @@ export function TextContextMenu() {
                       globalThis.utils.writeClipboard(text)
                   },
               },
+              ...(hasOpenArticle && trimmedText
+                  ? [
+                        {
+                            key: "quoteToNote",
+                            text: "摘录到文章备注",
+                            iconProps: { iconName: "EditNote" },
+                            onClick: () => {
+                                window.dispatchEvent(
+                                    new CustomEvent("quote-to-article-note", {
+                                        detail: { text: trimmedText },
+                                    })
+                                )
+                            },
+                        },
+                    ]
+                  : []),
+              ...(hasOpenArticle && trimmedText
+                  ? [
+                        {
+                            key: "aiTranslateSelection",
+                            text: "AI 翻译选中段落",
+                            iconProps: { iconName: "LocaleLanguage" },
+                            onClick: () => {
+                                window.dispatchEvent(
+                                    new CustomEvent("ai-translate-selection", {
+                                        detail: {
+                                            text: trimmedText,
+                                            position,
+                                        },
+                                    })
+                                )
+                            },
+                        },
+                    ]
+                  : []),
               getSearchItem(text),
           ]
         : []

@@ -9,14 +9,20 @@ import {
     MenuTrigger,
     MenuPopover,
     MenuList,
+    MenuItem,
     MenuItemRadio,
     MenuItemCheckbox,
     MenuDivider,
 } from "@fluentui/react-components"
+import { Dismiss12Regular } from "@fluentui/react-icons"
 import { makeStyles, mergeClasses, shorthands } from "@griffel/react"
 import { useAppDispatch, useAppSelector } from "../../scripts/reducer"
 import { validateRegex } from "../../scripts/utils"
-import { performSearch, configureSearch } from "../../scripts/models/page"
+import {
+    performSearch,
+    configureSearch,
+    toggleSearch,
+} from "../../scripts/models/page"
 import { FilterType } from "../../scripts/models/feed"
 
 const useStyles = makeStyles({
@@ -140,6 +146,8 @@ export default function ArticleSearch({
     return searchOn ? (
         <SearchBox
             ref={input}
+            spellCheck={false}
+            autoCorrect="off"
             style={!inline ? { maxWidth: availableWidth } : undefined}
             className={mergeClasses(
                 !inline && "article-search",
@@ -266,9 +274,30 @@ export default function ArticleSearch({
                             <MenuItemCheckbox name="case" value="yes">
                                 {intl.get("context.caseSensitive")}
                             </MenuItemCheckbox>
+                            <MenuDivider />
+                            <MenuItem
+                                onClick={() => {
+                                    window.dispatchEvent(
+                                        new Event("personal-search")
+                                    )
+                                }}>
+                                在全局全文库中检索 (Ctrl+Shift+F)
+                            </MenuItem>
                         </MenuList>
                     </MenuPopover>
                 </Menu>
+            }
+            contentAfter={
+                !query ? (
+                    <Button
+                        appearance="subtle"
+                        size="small"
+                        icon={<Dismiss12Regular />}
+                        aria-label={intl.get("close")}
+                        title={`${intl.get("close")} (Esc)`}
+                        onClick={() => dispatch(toggleSearch())}
+                    />
+                ) : undefined
             }
             value={query}
             dismiss={
@@ -290,11 +319,15 @@ export default function ArticleSearch({
                 search.run(value)
             }}
             onKeyDown={event => {
-                if (event.key === "Escape" && query) {
+                if (event.key === "Escape") {
                     event.preventDefault()
                     event.stopPropagation()
-                    setQuery("")
-                    search.run("")
+                    if (query) {
+                        setQuery("")
+                        search.run("")
+                    } else {
+                        dispatch(toggleSearch())
+                    }
                 }
             }}
         />

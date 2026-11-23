@@ -65,6 +65,7 @@ export default function OrganizeDialog() {
                     total={s.total}
                     busy={s.busy}
                     onRefreshPreview={s.triggerPreview}
+                    onCloseForRead={() => !s.busy && s.setOpen(false)}
                 />
                 <ArchiveActionForm
                     kind={s.kind}
@@ -74,6 +75,12 @@ export default function OrganizeDialog() {
                     suggestion={s.query.include}
                     hide={s.hide}
                     onHideChange={s.setHide}
+                    highlight={s.highlight}
+                    onHighlightChange={s.setHighlight}
+                    notify={s.notify}
+                    onNotifyChange={s.setNotify}
+                    autoOffline={s.autoOffline}
+                    onAutoOfflineChange={s.setAutoOffline}
                     future={s.future}
                     onFutureChange={s.setFuture}
                     ruleName={s.ruleName}

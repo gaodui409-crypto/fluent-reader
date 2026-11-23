@@ -258,7 +258,7 @@ function fetchItems(
                 if (item.notify) dispatch(pushNotification(item))
             }
             if (background) {
-                if (inserted.length > 0) window.utils.requestAttention()
+                // Taskbar flashing intentionally disabled; sidebar displays (+N) delta instead.
             }
         }
         // Hooks return candidate cursor values without mutating active state.

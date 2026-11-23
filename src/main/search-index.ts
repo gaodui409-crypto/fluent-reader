@@ -152,7 +152,7 @@ export class SearchIndex {
               ")"
         const rows = this.sqlite
             .prepare(
-                `SELECT f.rowid AS id, f.title, f.body, f.fullText, f.offlineText, coalesce(f.notes,'') AS notes, s.name AS source, ${rank} AS rank
+                `SELECT f.rowid AS id, f.title, f.body, f.fullText, f.offlineText, coalesce(f.notes,'') AS notes, s.name AS source, i.date AS date, ${rank} AS rank
             FROM article_fts f JOIN items i ON i._id=f.rowid JOIN sources s ON s.sid=i.source
             WHERE ${conditions.join(
                 " AND "
@@ -167,6 +167,7 @@ export class SearchIndex {
             notes: string
             fullText: string
             offlineText: string
+            date: number
         })[]
         const lowerTerms = terms.map(t => t.toLocaleLowerCase())
         return rows.map(
@@ -179,6 +180,7 @@ export class SearchIndex {
                 notes,
                 source,
                 rank,
+                date,
             }) => {
                 const text =
                     [notes, body, fullText, offlineText].find(value => {
@@ -201,6 +203,7 @@ export class SearchIndex {
                     title,
                     source,
                     rank,
+                    date: Number(date) || 0,
                     excerpt:
                         (start ? "…" : "") +
                         text.slice(start, start + 240) +

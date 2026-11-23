@@ -125,20 +125,34 @@ export function getRuleTargetKey(target: RuleTarget): RuleTargetKey {
     }
 }
 
+export type StoredAIProfile = {
+    id: string
+    name: string
+    baseURL: string
+    model: string
+    summaryModel?: string
+    translateModel?: string
+    encryptedKey: string
+}
+
 export type SchemaTypes = {
     linuxDoRanking?: import("./linuxdo").RankingState
     readingPreferences: import("./reading-preferences").ReadingPreferences
     ai: import("./personal-types").AIConfig & {
         encryptedKey: string
         lastBriefingDay: string
+        profiles?: StoredAIProfile[]
     }
     sourcePreferences: import("./source-preferences").PreferenceOverrides
     sourceRulesVersion: number
+    sourceRulesMigrated?: boolean
+    tagsCleaned?: boolean
     personal: import("./personal-types").PersonalSettings
     version: string
     theme: ThemeSettings
     pac: string
     pacOn: boolean
+    proxyMode?: "pac" | "direct"
     view: ViewType
     locale: string
     sourceGroups: SourceGroup[]

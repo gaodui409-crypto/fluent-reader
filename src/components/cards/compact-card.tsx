@@ -13,7 +13,6 @@ import { selectArticle } from "../../scripts/models/organize"
 const useStyles = makeStyles({
     batchSelected: {
         backgroundColor: "var(--neutralLighter)",
-        boxShadow: "inset 3px 0 0 var(--primary)",
     },
 })
 
@@ -38,6 +37,12 @@ const CompactCard: React.FunctionComponent<Card.Props> = props => {
         event.stopPropagation()
         dispatch(selectArticle(props.item._id, event.shiftKey))
     }
+
+    const shadows: string[] = []
+    if (props.item.highlight)
+        shadows.push(`inset 4px 0 ${props.item.highlight}`)
+    if (batchSelected) shadows.push("inset 0 0 0 2px var(--primary)")
+
     return (
         <div
             className={mergeClasses(
@@ -45,6 +50,9 @@ const CompactCard: React.FunctionComponent<Card.Props> = props => {
                 batchSelected && classes.batchSelected
             )}
             {...events}
+            style={
+                shadows.length ? { boxShadow: shadows.join(", ") } : undefined
+            }
             onClick={event => {
                 if (event.ctrlKey || event.metaKey || event.shiftKey) {
                     choose(event)

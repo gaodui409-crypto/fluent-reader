@@ -15,11 +15,11 @@ const useStyles = makeStyles({
         }),
         "position": "relative",
         "display": "inline-block",
-        "width": "48px",
-        "height": "32px",
+        "width": "44px",
+        "height": "var(--navHeight, 32px)",
         "textDecorationLine": "none",
         "textAlign": "center",
-        "lineHeight": "32px",
+        "lineHeight": "var(--navHeight, 32px)",
         "color": "var(--black)",
         "fontSize": "14px",
         "verticalAlign": "top",
@@ -36,18 +36,10 @@ const useStyles = makeStyles({
         "cursor": "inherit",
         "fontFamily": "inherit",
         ":hover": {
-            backgroundColor: "#0001",
+            backgroundColor: "rgba(127, 127, 127, 0.12)",
         },
         ":active": {
-            backgroundColor: "#0002",
-        },
-        "@media (prefers-color-scheme: dark)": {
-            ":hover": {
-                backgroundColor: "#fff1",
-            },
-            ":active": {
-                backgroundColor: "#fff2",
-            },
+            backgroundColor: "rgba(127, 127, 127, 0.2)",
         },
     },
     disabled: {
@@ -63,13 +55,16 @@ const useStyles = makeStyles({
     fetching: {
         "backgroundColor": "unset !important",
         "color": "var(--neutralSecondaryAlt)",
-        "animationName": {
-            from: { transform: "rotate(0deg)" },
-            to: { transform: "rotate(360deg)" },
+        "& i, & svg": {
+            display: "inline-block",
+            animationName: {
+                from: { transform: "rotate(0deg)" },
+                to: { transform: "rotate(360deg)" },
+            },
+            animationDuration: "1.2s",
+            animationTimingFunction: "linear",
+            animationIterationCount: "infinite",
         },
-        "animationDuration": "1.5s",
-        "animationTimingFunction": "linear",
-        "animationIterationCount": "infinite",
         ":hover": {
             backgroundColor: "unset !important",
         },
@@ -120,6 +115,7 @@ export const FlatButton: React.FC<FlatButtonProps> = ({
 
     return (
         <button
+            type="button"
             className={mergeClasses(
                 classes.root,
                 variant === "close" && classes.close,

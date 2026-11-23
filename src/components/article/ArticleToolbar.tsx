@@ -1,6 +1,18 @@
 import * as React from "react"
+import { useRef, useState } from "react"
 import intl from "react-intl-universal"
-import { CommandBarButton, IContextualMenuProps, Stack } from "@fluentui/react"
+import {
+    Callout,
+    CommandBarButton,
+    DefaultButton,
+    DirectionalHint,
+    Dropdown,
+    Icon,
+    IContextualMenuProps,
+    Spinner as FluentV8Spinner,
+    SpinnerSize,
+    Stack,
+} from "@fluentui/react"
 import { Spinner } from "@fluentui/react-components"
 import { makeStyles, mergeClasses } from "@griffel/react"
 import {
@@ -12,6 +24,7 @@ import {
 } from "../../scripts/models/item"
 import { RSSSource } from "../../scripts/models/source"
 import { SourcePreferences } from "../../source-preferences"
+import { ReaderWidthMode } from "../../reading-preferences"
 import { useAppDispatch, useAppSelector } from "../../scripts/reducer"
 import {
     deleteOffline,
@@ -34,6 +47,7 @@ const useStyles = makeStyles({
         color: "var(--black)",
         paddingLeft: "14px",
         paddingRight: "8px",
+        alignItems: "center",
     },
     sideActions: {
         paddingLeft: "14px",
@@ -75,7 +89,86 @@ const useStyles = makeStyles({
     },
     unreadIcon: { fontSize: "14px", textAlign: "center" },
     menuIcon: { display: "none" },
+    separator: {
+        display: "inline-block",
+        alignSelf: "center",
+        height: "16px",
+        margin: "0 2px",
+        borderLeft: "1px solid var(--neutralQuaternaryAlt)",
+        flexShrink: 0,
+    },
+    iconWrap: {
+        position: "relative",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: "3px",
+    },
+    accentDot: {
+        position: "absolute",
+        top: "-2px",
+        right: "-3px",
+        width: "6px",
+        height: "6px",
+        borderRadius: "999px",
+        backgroundColor: "var(--themePrimary)",
+    },
+    countBadge: {
+        fontSize: "10.5px",
+        lineHeight: 1.2,
+        padding: "0 4px",
+        borderRadius: "999px",
+        backgroundColor: "var(--neutralLight)",
+        color: "var(--themePrimary)",
+        fontWeight: 600,
+    },
+    aaTextIcon: {
+        fontWeight: 650,
+        fontSize: "13px",
+        letterSpacing: "-0.02em",
+        lineHeight: 1,
+    },
+    calloutBody: {
+        padding: "14px 16px",
+        width: "268px",
+        display: "grid",
+        gap: "12px",
+        backgroundColor: "var(--white)",
+        color: "var(--black)",
+        boxSizing: "border-box",
+    },
+    calloutSection: {
+        display: "grid",
+        gap: "6px",
+    },
+    calloutLabel: {
+        fontSize: "12px",
+        fontWeight: 600,
+        color: "var(--neutralSecondary)",
+    },
+    segmentedRow: {
+        display: "grid",
+        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+        gap: "6px",
+    },
+    fontSizeRow: {
+        display: "grid",
+        gridTemplateColumns: "40px minmax(0, 1fr) 40px",
+        gap: "6px",
+        alignItems: "center",
+    },
+    segBtn: {
+        minWidth: 0,
+        padding: "0 6px",
+        fontSize: "12px",
+    },
 })
+
+const LINE_HEIGHT_PRESETS: Array<{ label: string; value: number }> = [
+    { label: "紧凑 1.6", value: 1.6 },
+    { label: "标准 1.82", value: 1.82 },
+    { label: "宽松 2.05", value: 2.05 },
+]
 
 export const ArticleToolbar: React.FC<{
     item: RSSItem
@@ -89,11 +182,21 @@ export const ArticleToolbar: React.FC<{
     notesOpen: boolean
     hasNote: boolean
     folderCount: number
+    findOpen: boolean
+    fontSize: number
+    fontFamily: string
+    readerWidth: ReaderWidthMode
+    lineHeight: number
     aiController: ReturnType<typeof useAIArticleController>
     moreMenuProps: IContextualMenuProps
     onToggleNotes: () => void
     onToggleFull: () => void
     onToggleWebpage: () => void
+    onToggleFind: () => void
+    onUpdateFontSize: (size: number) => void
+    onUpdateFont: (font: string) => void
+    onUpdateReaderWidth: (mode: ReaderWidthMode) => void
+    onUpdateLineHeight: (lh: number) => void
     onDismiss: () => void
 }> = ({
     item,
@@ -107,15 +210,28 @@ export const ArticleToolbar: React.FC<{
     notesOpen,
     hasNote,
     folderCount,
+    findOpen,
+    fontSize,
+    fontFamily,
+    readerWidth,
+    lineHeight,
     aiController,
     moreMenuProps,
     onToggleNotes,
     onToggleFull,
     onToggleWebpage,
+    onToggleFind,
+    onUpdateFontSize,
+    onUpdateFont,
+    onUpdateReaderWidth,
+    onUpdateLineHeight,
     onDismiss,
 }) => {
     const classes = useStyles()
     const dispatch = useAppDispatch()
+    const [aaOpen, setAaOpen] = useState(false)
+    const aaButtonRef = useRef<HTMLDivElement>(null)
+
     const savedOffline = useAppSelector(state =>
         state.library.saved.includes(item._id)
     )
@@ -126,8 +242,9 @@ export const ArticleToolbar: React.FC<{
         offlineTask?.state === "waiting" || offlineTask?.state === "running"
     const offlineFailed = offlineTask?.state === "failed"
 
+    const noteBadgeCount = (hasNote ? 1 : 0) + folderCount
     const notesLabel =
-        "备注与归类" +
+        "备注与归类 (N)" +
         (hasNote ? " · 有备注" : "") +
         (folderCount ? ` · ${folderCount} 个文件夹` : "") +
         (notesOpen ? "（点击收起）" : "")
@@ -140,8 +257,31 @@ export const ArticleToolbar: React.FC<{
         ? intl.get("personal.savedOffline")
         : intl.get("personal.offlineSave")
 
+    const readTitle = `${
+        item.hasRead
+            ? intl.get("article.markUnread") || "标为未读"
+            : intl.get("article.markRead") || "标为已读"
+    } (M)`
+    const starTitle = `${
+        item.starred
+            ? intl.get("article.unstar") || "取消收藏"
+            : intl.get("article.star") || "收藏"
+    } (S)`
+    const laterTitle = `${
+        intl.get(
+            item.readLater ? "personal.removeLater" : "personal.laterAction"
+        ) || "稍后读"
+    } (R)`
+    const fullTitle = `${intl.get("article.loadFull") || "抓取全文"} (W)`
+    const webpageTitle = `${intl.get("article.loadWebpage") || "内置网页"} (L)`
+    const closeTitle = `${intl.get("close") || "关闭"} (Esc)`
+
     return (
-        <Stack horizontal className={classes.toolbar}>
+        <Stack
+            horizontal
+            role="toolbar"
+            aria-label="文章操作栏"
+            className={classes.toolbar}>
             <Stack
                 className={mergeClasses(
                     "actions",
@@ -150,7 +290,7 @@ export const ArticleToolbar: React.FC<{
                 )}
                 grow
                 horizontal
-                tokens={{ childrenGap: 4 }}>
+                tokens={{ childrenGap: 2 }}>
                 <Stack.Item grow className={classes.source}>
                     <span className={classes.sourceName} title={source.name}>
                         {loaded ? (
@@ -175,12 +315,10 @@ export const ArticleToolbar: React.FC<{
                         )}
                     </span>
                 </Stack.Item>
+
                 <CommandBarButton
-                    title={
-                        item.hasRead
-                            ? intl.get("article.markUnread")
-                            : intl.get("article.markRead")
-                    }
+                    title={readTitle}
+                    ariaLabel={readTitle}
                     iconProps={
                         item.hasRead
                             ? { iconName: "StatusCircleRing" }
@@ -196,11 +334,9 @@ export const ArticleToolbar: React.FC<{
                     }
                 />
                 <CommandBarButton
-                    title={
-                        item.starred
-                            ? intl.get("article.unstar")
-                            : intl.get("article.star")
-                    }
+                    title={starTitle}
+                    ariaLabel={starTitle}
+                    aria-pressed={Boolean(item.starred)}
                     className={item.starred ? "active" : ""}
                     iconProps={{
                         iconName: item.starred
@@ -210,11 +346,9 @@ export const ArticleToolbar: React.FC<{
                     onClick={() => dispatch(toggleStarred(item))}
                 />
                 <CommandBarButton
-                    title={intl.get(
-                        item.readLater
-                            ? "personal.removeLater"
-                            : "personal.laterAction"
-                    )}
+                    title={laterTitle}
+                    ariaLabel={laterTitle}
+                    aria-pressed={Boolean(item.readLater)}
                     className={item.readLater ? "active" : ""}
                     iconProps={{ iconName: "Clock" }}
                     onClick={() =>
@@ -230,13 +364,38 @@ export const ArticleToolbar: React.FC<{
                         )
                     }
                 />
+
+                <span
+                    role="separator"
+                    aria-orientation="vertical"
+                    className={classes.separator}
+                />
+
                 <CommandBarButton
                     title={notesLabel}
                     ariaLabel={notesLabel}
-                    className={
-                        notesOpen || hasNote || folderCount > 0 ? "active" : ""
-                    }
+                    aria-pressed={notesOpen}
+                    className={notesOpen ? "active" : ""}
                     iconProps={{ iconName: "EditNote" }}
+                    onRenderIcon={() => (
+                        <span className={classes.iconWrap}>
+                            <Icon iconName="EditNote" />
+                            {!notesOpen &&
+                                noteBadgeCount > 0 &&
+                                (folderCount > 0 ? (
+                                    <span
+                                        className={classes.countBadge}
+                                        aria-hidden="true">
+                                        {noteBadgeCount}
+                                    </span>
+                                ) : (
+                                    <span
+                                        className={classes.accentDot}
+                                        aria-hidden="true"
+                                    />
+                                ))}
+                        </span>
+                    )}
                     onClick={onToggleNotes}
                 />
                 {preferences.aiEnabled && (
@@ -246,6 +405,7 @@ export const ArticleToolbar: React.FC<{
                     (savedOffline && !offlineBusy && !offlineFailed ? (
                         <CommandBarButton
                             title={offlineTitle}
+                            ariaLabel={offlineTitle}
                             className="active"
                             iconProps={{ iconName: "OfflineStorage" }}
                             menuIconProps={{ className: classes.menuIcon }}
@@ -277,7 +437,7 @@ export const ArticleToolbar: React.FC<{
                                     },
                                     {
                                         key: "delete",
-                                        text: "删除离线网页",
+                                        text: "删除本地副本",
                                         iconProps: { iconName: "Delete" },
                                         onClick: () =>
                                             void dispatch(
@@ -290,33 +450,76 @@ export const ArticleToolbar: React.FC<{
                     ) : (
                         <CommandBarButton
                             title={offlineTitle}
-                            disabled={offlineBusy}
+                            ariaLabel={offlineTitle}
+                            aria-disabled={offlineBusy || undefined}
                             iconProps={{
-                                iconName: offlineBusy
-                                    ? "Sync"
-                                    : offlineFailed
-                                    ? "Warning"
-                                    : "Save",
+                                iconName: offlineFailed ? "Warning" : "Save",
                             }}
-                            onClick={() => void dispatch(saveOffline(item._id))}
+                            onRenderIcon={
+                                offlineBusy
+                                    ? () => (
+                                          <FluentV8Spinner
+                                              size={SpinnerSize.xSmall}
+                                          />
+                                      )
+                                    : undefined
+                            }
+                            onClick={() => {
+                                if (offlineBusy) return
+                                void dispatch(saveOffline(item._id))
+                            }}
                         />
                     ))}
+
+                <span
+                    role="separator"
+                    aria-orientation="vertical"
+                    className={classes.separator}
+                />
+
                 {canFetchFull && (
                     <CommandBarButton
-                        title={intl.get("article.loadFull")}
+                        title={fullTitle}
+                        ariaLabel={fullTitle}
+                        aria-pressed={loadFull}
                         className={loadFull ? "active" : ""}
                         iconProps={{ iconName: "RawSource" }}
                         onClick={onToggleFull}
                     />
                 )}
                 <CommandBarButton
-                    title={intl.get("article.loadWebpage")}
+                    title={webpageTitle}
+                    ariaLabel={webpageTitle}
+                    aria-pressed={loadWebpage}
                     className={loadWebpage ? "active" : ""}
                     iconProps={{ iconName: "Globe" }}
                     onClick={onToggleWebpage}
                 />
                 <CommandBarButton
+                    title="页内查找 (Ctrl+F)"
+                    ariaLabel="页内查找 (Ctrl+F)"
+                    aria-pressed={findOpen}
+                    className={findOpen ? "active" : ""}
+                    iconProps={{ iconName: "Search" }}
+                    onClick={onToggleFind}
+                />
+                {!loadWebpage && (
+                    <div ref={aaButtonRef} style={{ display: "inline-flex" }}>
+                        <CommandBarButton
+                            title="阅读排版"
+                            ariaLabel="阅读排版"
+                            aria-expanded={aaOpen}
+                            className={aaOpen ? "active" : ""}
+                            onRenderIcon={() => (
+                                <span className={classes.aaTextIcon}>Aa</span>
+                            )}
+                            onClick={() => setAaOpen(prev => !prev)}
+                        />
+                    </div>
+                )}
+                <CommandBarButton
                     title={intl.get("more")}
+                    ariaLabel={intl.get("more")}
                     iconProps={{ iconName: "More" }}
                     menuIconProps={{ className: classes.menuIcon }}
                     menuProps={moreMenuProps}
@@ -328,11 +531,148 @@ export const ArticleToolbar: React.FC<{
                     horizontalAlign="end"
                     className={classes.closeGroup}>
                     <CommandBarButton
-                        title={intl.get("close")}
+                        title={closeTitle}
+                        ariaLabel={closeTitle}
                         iconProps={{ iconName: "BackToWindow" }}
                         onClick={onDismiss}
                     />
                 </Stack>
+            )}
+
+            {aaOpen && aaButtonRef.current && !loadWebpage && (
+                <Callout
+                    target={aaButtonRef.current}
+                    isBeakVisible={false}
+                    gapSpace={6}
+                    directionalHint={DirectionalHint.bottomRightEdge}
+                    setInitialFocus
+                    onDismiss={ev => {
+                        if (
+                            ev &&
+                            "target" in ev &&
+                            (ev.target as HTMLElement | null)?.closest?.(
+                                ".ms-Dropdown-callout"
+                            )
+                        ) {
+                            return
+                        }
+                        setAaOpen(false)
+                    }}>
+                    <div
+                        className={classes.calloutBody}
+                        role="dialog"
+                        aria-label="阅读排版设置">
+                        <div className={classes.calloutSection}>
+                            <span className={classes.calloutLabel}>
+                                字号大小 (Ctrl+- / Ctrl+=)
+                            </span>
+                            <div className={classes.fontSizeRow}>
+                                <DefaultButton
+                                    className={classes.segBtn}
+                                    ariaLabel="减小字号"
+                                    disabled={fontSize <= 12}
+                                    onClick={() =>
+                                        onUpdateFontSize(
+                                            Math.max(12, fontSize - 1)
+                                        )
+                                    }>
+                                    −
+                                </DefaultButton>
+                                <DefaultButton
+                                    className={classes.segBtn}
+                                    title="点击恢复默认 16 px"
+                                    onClick={() => onUpdateFontSize(16)}>
+                                    {fontSize} px
+                                </DefaultButton>
+                                <DefaultButton
+                                    className={classes.segBtn}
+                                    ariaLabel="增大字号"
+                                    disabled={fontSize >= 28}
+                                    onClick={() =>
+                                        onUpdateFontSize(
+                                            Math.min(28, fontSize + 1)
+                                        )
+                                    }>
+                                    +
+                                </DefaultButton>
+                            </div>
+                        </div>
+
+                        <div className={classes.calloutSection}>
+                            <span className={classes.calloutLabel}>
+                                版心宽度
+                            </span>
+                            <div
+                                className={classes.segmentedRow}
+                                role="group"
+                                aria-label="版心宽度">
+                                {(
+                                    [
+                                        ["narrow", "窄栏"],
+                                        ["standard", "标准"],
+                                        ["wide", "宽屏"],
+                                    ] as const
+                                ).map(([mode, label]) => (
+                                    <DefaultButton
+                                        key={mode}
+                                        className={classes.segBtn}
+                                        checked={readerWidth === mode}
+                                        aria-pressed={readerWidth === mode}
+                                        onClick={() =>
+                                            onUpdateReaderWidth(mode)
+                                        }>
+                                        {label}
+                                    </DefaultButton>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className={classes.calloutSection}>
+                            <span className={classes.calloutLabel}>行距</span>
+                            <div
+                                className={classes.segmentedRow}
+                                role="group"
+                                aria-label="行距">
+                                {LINE_HEIGHT_PRESETS.map(preset => {
+                                    const active =
+                                        Math.abs(lineHeight - preset.value) <
+                                        0.04
+                                    return (
+                                        <DefaultButton
+                                            key={preset.value}
+                                            className={classes.segBtn}
+                                            checked={active}
+                                            aria-pressed={active}
+                                            onClick={() =>
+                                                onUpdateLineHeight(preset.value)
+                                            }>
+                                            {preset.label}
+                                        </DefaultButton>
+                                    )
+                                })}
+                            </div>
+                        </div>
+
+                        <div className={classes.calloutSection}>
+                            <Dropdown
+                                label={intl.get("article.font") || "正文字体"}
+                                selectedKey={fontFamily}
+                                options={(window.fontList || [""]).map(
+                                    font => ({
+                                        key: font,
+                                        text:
+                                            font === ""
+                                                ? intl.get("default")
+                                                : font,
+                                    })
+                                )}
+                                onChange={(_, opt) =>
+                                    opt && onUpdateFont(String(opt.key))
+                                }
+                            />
+                        </div>
+                    </div>
+                </Callout>
             )}
         </Stack>
     )

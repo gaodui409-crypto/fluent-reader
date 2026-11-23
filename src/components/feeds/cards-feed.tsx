@@ -1,6 +1,5 @@
 import * as React from "react"
 import { useState, useEffect, useCallback, useRef } from "react"
-import intl from "react-intl-universal"
 import { FeedProps } from "./feed"
 import DefaultCard from "../cards/default-card"
 import { RSSItem } from "../../scripts/models/item"
@@ -22,24 +21,26 @@ const CardsFeed: React.FC<FeedProps> = props => {
     const observerRef = useRef<ResizeObserver>(null)
 
     useEffect(() => {
-        setWidth(document.querySelector(".main").clientWidth - 40)
+        const main = document.querySelector(".main")
+        if (!main) return
+        setWidth(main.clientWidth - 40)
         observerRef.current = new ResizeObserver(
             (entries: ResizeObserverEntry[]) => {
-                if (entries) {
+                if (entries.length) {
                     setWidth(entries[0].contentRect.width - 40)
                     setHeight(window.innerHeight)
                 }
             }
         )
-        observerRef.current.observe(document.querySelector(".main"))
+        observerRef.current.observe(main)
         return () => {
-            observerRef.current.disconnect()
+            observerRef.current?.disconnect()
         }
     }, [])
 
     const getItemCountForPage = useCallback(() => {
-        let elemPerRow = Math.max(1, Math.floor(width / 280))
-        let rows = Math.ceil(height / 340)
+        const elemPerRow = Math.max(1, Math.floor(width / 280))
+        const rows = Math.ceil(height / 340)
         return elemPerRow * rows
     }, [width, height])
 
@@ -48,9 +49,11 @@ const CardsFeed: React.FC<FeedProps> = props => {
     }, [height])
 
     const flexFixItems = () => {
-        let elemPerRow = Math.max(1, Math.floor(width / 280))
-        let elemLastRow = props.items.length % elemPerRow
-        let items = [...props.items]
+        if (props.items.length === 0) return []
+        const elemPerRow = Math.max(1, Math.floor(width / 280))
+        const elemLastRow = props.items.length % elemPerRow
+        if (elemLastRow === 0) return props.items
+        const items: (RSSItem | null)[] = [...props.items]
         for (let i = 0; i < elemPerRow - elemLastRow; i += 1) items.push(null)
         return items
     }
@@ -81,20 +84,19 @@ const CardsFeed: React.FC<FeedProps> = props => {
                 id="refocus"
                 className="cards-feed-container"
                 data-is-scrollable>
-                <List
-                    className={AnimationClassNames.slideUpIn10}
-                    items={flexFixItems()}
-                    onRenderCell={onRenderItem}
-                    onPagesUpdated={onPagesUpdated}
-                    getItemCountForPage={getItemCountForPage}
-                    getPageHeight={getPageHeight}
-                    ignoreScrollingState
-                    usePageCache
-                />
-                <FeedEnd feed={props.feed} loadMore={props.loadMore} />
-                {props.items.length === 0 && (
-                    <div className="empty">{intl.get("article.empty")}</div>
+                {props.items.length > 0 && (
+                    <List
+                        className={AnimationClassNames.slideUpIn10}
+                        items={flexFixItems()}
+                        onRenderCell={onRenderItem}
+                        onPagesUpdated={onPagesUpdated}
+                        getItemCountForPage={getItemCountForPage}
+                        getPageHeight={getPageHeight}
+                        ignoreScrollingState
+                        usePageCache
+                    />
                 )}
+                <FeedEnd {...props} />
             </FocusZone>
         )
     )

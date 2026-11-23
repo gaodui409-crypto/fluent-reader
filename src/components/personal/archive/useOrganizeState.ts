@@ -9,8 +9,17 @@ import {
 } from "../../../archive-types"
 import { useAppDispatch, useAppSelector } from "../../../scripts/reducer"
 import { refreshArchive } from "../../../scripts/models/archive"
+import { loadLibrary } from "../../../scripts/models/library"
 import { showArchiveMatches } from "../../../scripts/models/page"
 import { FilterType } from "../../../scripts/models/feed"
+
+export const HIGHLIGHT_SWATCHES = [
+    { color: "#e3a008", label: "琥珀黄 (#e3a008)" },
+    { color: "#2684ff", label: "晴空蓝 (#2684ff)" },
+    { color: "#2e9d66", label: "翡翠绿 (#2e9d66)" },
+    { color: "#cf4a76", label: "珊瑚红 (#cf4a76)" },
+    { color: "#9366cc", label: "鸢尾紫 (#9366cc)" },
+] as const
 
 export function openOrganize(value?: unknown) {
     const rule = value as ArchiveRule
@@ -29,7 +38,10 @@ function isUnconstrainedAllQuery(q: ArchiveQuery): boolean {
         q.start === undefined &&
         q.end === undefined &&
         q.sids === undefined &&
-        q.gid === undefined
+        q.gid === undefined &&
+        (!q.readState || q.readState === "all") &&
+        !q.unfolderedOnly &&
+        !q.starredOnly
     )
 }
 
@@ -45,6 +57,9 @@ export function useOrganizeState() {
     const [kind, setKind] = useState("folder")
     const [folderId, setFolderId] = useState<number>()
     const [hide, setHide] = useState(false)
+    const [highlight, setHighlight] = useState("")
+    const [notify, setNotify] = useState(false)
+    const [autoOffline, setAutoOffline] = useState(false)
     const [future, setFuture] = useState(false)
     const [advanced, setAdvanced] = useState(false)
     const [preview, setPreview] = useState<ArchivePreview>()
@@ -67,6 +82,19 @@ export function useOrganizeState() {
                 setKind(rule.action.kind)
                 setFolderId(rule.action.folderId)
                 setHide(!!rule.action.feedHidden)
+                setHighlight(
+                    rule.action.highlight ||
+                        (rule.action.kind === "highlight" ? "#e3a008" : "")
+                )
+                setNotify(
+                    Boolean(rule.action.notify || rule.action.kind === "notify")
+                )
+                setAutoOffline(
+                    Boolean(
+                        rule.action.autoOffline ||
+                            rule.action.kind === "offline"
+                    )
+                )
                 setRuleId(rule.id)
                 setRuleName(rule.name)
                 setFuture(true)
@@ -105,6 +133,9 @@ export function useOrganizeState() {
                 setKind("folder")
                 setFolderId(undefined)
                 setHide(false)
+                setHighlight("")
+                setNotify(false)
+                setAutoOffline(false)
                 setRuleId("")
                 setRuleName("")
                 setFuture(false)
@@ -119,6 +150,13 @@ export function useOrganizeState() {
         window.addEventListener("organize-articles", show)
         return () => window.removeEventListener("organize-articles", show)
     }, [feed])
+
+    const handleKindChange = (nextKind: string) => {
+        setKind(nextKind)
+        if (nextKind === "highlight" && !highlight) {
+            setHighlight("#e3a008")
+        }
+    }
 
     const effective: ArchiveQuery = {
         ...query,
@@ -179,6 +217,29 @@ export function useOrganizeState() {
 
     const total = (preview?.rows.length || 0) - excluded.length
 
+    function buildAction(): ArchiveAction {
+        const resolvedHighlight =
+            kind === "highlight"
+                ? highlight || "#e3a008"
+                : future && highlight
+                ? highlight
+                : undefined
+        return {
+            kind: kind as ArchiveAction["kind"],
+            folderId: kind === "folder" ? folderId : undefined,
+            feedHidden: kind === "folder" ? hide : undefined,
+            highlight: resolvedHighlight,
+            notify:
+                kind === "notify" ? true : future && notify ? true : undefined,
+            autoOffline:
+                kind === "offline"
+                    ? true
+                    : future && autoOffline
+                    ? true
+                    : undefined,
+        }
+    }
+
     async function execute() {
         if (!preview) return
         setBusy(true)
@@ -186,11 +247,7 @@ export function useOrganizeState() {
         let completed: ArchiveResult | undefined
         const stableRuleId = ruleId || crypto.randomUUID()
         setRuleId(stableRuleId)
-        const action: ArchiveAction = {
-            kind: kind as ArchiveAction["kind"],
-            folderId: kind === "folder" ? folderId : undefined,
-            feedHidden: hide,
-        }
+        const action = buildAction()
         try {
             if (kind === "view") {
                 await dispatch(
@@ -212,6 +269,9 @@ export function useOrganizeState() {
             setResult(r)
             setPreview(undefined)
             const syncWarning = await dispatch(refreshArchive(r))
+            if (action.kind === "offline" || action.autoOffline) {
+                await dispatch(loadLibrary()).catch(() => {})
+            }
             setMessage(`本次已处理 ${r.count} 篇${syncWarning}`)
             if (future) {
                 const saved = await window.personal.archiveSaveRule({
@@ -249,11 +309,7 @@ export function useOrganizeState() {
                 name: ruleName.trim() || query.include.trim() || "文章整理",
                 enabled: true,
                 query: effective,
-                action: {
-                    kind: kind as ArchiveAction["kind"],
-                    folderId: kind === "folder" ? folderId : undefined,
-                    feedHidden: hide,
-                },
+                action: buildAction(),
             })
             setRuleId(r.id)
             setMessage("规则已保存；本次没有修改已有文章。")
@@ -292,11 +348,17 @@ export function useOrganizeState() {
         scope,
         setScope,
         kind,
-        setKind,
+        setKind: handleKindChange,
         folderId,
         setFolderId,
         hide,
         setHide,
+        highlight,
+        setHighlight,
+        notify,
+        setNotify,
+        autoOffline,
+        setAutoOffline,
         future,
         setFuture,
         advanced,

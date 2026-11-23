@@ -8,7 +8,6 @@ import Settings from "./settings"
 import FullSearch from "./personal/search"
 import SourceSettings from "./personal/source-settings"
 import { Briefings } from "./personal/ai"
-import TagsEditor from "./personal/tags"
 import OrganizePanel from "./personal/organize"
 import { showItemFromId } from "../scripts/models/page"
 import { loadLibrary, expireUnread } from "../scripts/models/library"
@@ -19,9 +18,10 @@ import {
     FluentProvider,
     makeStyles,
     mergeClasses,
+    tokens,
 } from "@fluentui/react-components"
-import { useEffect, useMemo, useState } from "react"
-import { loadTheme, ThemeProvider } from "@fluentui/react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Icon, loadTheme, ThemeProvider } from "@fluentui/react"
 import { CUSTOM_STYLE_HOOKS, createAppTheme } from "./utils/theme"
 import { CustomStyleHooksProvider_unstable as CustomStyleHooksProvider } from "@fluentui/react-shared-contexts"
 import { getFontFamilyForLocale } from "../scripts/settings"
@@ -48,6 +48,47 @@ const useClasses = makeStyles({
         animationTimingFunction: "var(--transition-timing)",
         animationFillMode: "backwards",
     },
+    toast: {
+        position: "fixed",
+        right: "20px",
+        bottom: "20px",
+        zIndex: 10000,
+        maxWidth: "380px",
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        padding: "10px 14px",
+        borderRadius: "8px",
+        backgroundColor: tokens.colorNeutralBackground1,
+        color: tokens.colorNeutralForeground1,
+        border: `1px solid ${tokens.colorNeutralStroke1}`,
+        boxShadow:
+            "0 8px 24px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.12)",
+        fontSize: "13px",
+        lineHeight: "18px",
+    },
+    toastError: {
+        borderLeft: "4px solid #d13438",
+    },
+    toastSuccess: {
+        borderLeft: "4px solid #107c10",
+    },
+    toastInfo: {
+        borderLeft: `4px solid ${tokens.colorBrandStroke1}`,
+    },
+    toastClose: {
+        "border": "none",
+        "background": "transparent",
+        "color": tokens.colorNeutralForeground3,
+        "cursor": "pointer",
+        "padding": "2px 4px",
+        "marginLeft": "auto",
+        "borderRadius": "4px",
+        ":hover": {
+            color: tokens.colorNeutralForeground1,
+            backgroundColor: tokens.colorSubtleBackgroundHover,
+        },
+    },
 })
 
 const Root: React.FC = () => {
@@ -58,6 +99,34 @@ const Root: React.FC = () => {
     const preferences = useAppSelector(s => s.preferences)
     const sourceKeys = useAppSelector(s => Object.keys(s.sources).join(","))
     const refreshCompletedAt = useAppSelector(s => s.app.refreshCompletedAt)
+    const [toast, setToast] = useState<{
+        text: string
+        kind: "info" | "success" | "error"
+    } | null>(null)
+    const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+    useEffect(() => {
+        const onToast = (
+            e: CustomEvent<{ text: string; kind: "info" | "success" | "error" }>
+        ) => {
+            if (!e.detail?.text) return
+            clearTimeout(toastTimer.current)
+            setToast(e.detail)
+            toastTimer.current = setTimeout(
+                () => setToast(null),
+                e.detail.kind === "error" ? 5500 : 3200
+            )
+        }
+        window.addEventListener("personal-toast", onToast as EventListener)
+        return () => {
+            clearTimeout(toastTimer.current)
+            window.removeEventListener(
+                "personal-toast",
+                onToast as EventListener
+            )
+        }
+    }, [])
+
     useEffect(() => {
         const refresh = () => {
             void dispatch(refreshIfDue()).catch(console.error)
@@ -164,11 +233,53 @@ const Root: React.FC = () => {
                             <Settings />
                             <FullSearch />
                             <SourceSettings />
-                            <TagsEditor />
                             <OrganizePanel />
                             <FolderManager />
                             <Briefings />
                             <ContextMenu />
+                            {toast && (
+                                <div
+                                    role="status"
+                                    aria-live="polite"
+                                    className={mergeClasses(
+                                        classes.toast,
+                                        toast.kind === "error"
+                                            ? classes.toastError
+                                            : toast.kind === "success"
+                                            ? classes.toastSuccess
+                                            : classes.toastInfo
+                                    )}>
+                                    <Icon
+                                        iconName={
+                                            toast.kind === "error"
+                                                ? "ErrorBadge"
+                                                : toast.kind === "success"
+                                                ? "Completed"
+                                                : "Info"
+                                        }
+                                        style={{
+                                            color:
+                                                toast.kind === "error"
+                                                    ? "#d13438"
+                                                    : toast.kind === "success"
+                                                    ? "#107c10"
+                                                    : "var(--primary)",
+                                            flexShrink: 0,
+                                        }}
+                                    />
+                                    <span>{toast.text}</span>
+                                    <button
+                                        type="button"
+                                        className={classes.toastClose}
+                                        aria-label={intl.get("close")}
+                                        onClick={() => setToast(null)}>
+                                        <Icon
+                                            iconName="Cancel"
+                                            style={{ fontSize: 11 }}
+                                        />
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </CustomStyleHooksProvider>
                 </ThemeProvider>

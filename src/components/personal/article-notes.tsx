@@ -5,7 +5,6 @@ import {
     ITextField,
     MessageBar,
     MessageBarType,
-    PrimaryButton,
     TextField,
 } from "@fluentui/react"
 import { makeStyles } from "@griffel/react"
@@ -34,6 +33,24 @@ function pruneDrafts(keepId: number) {
         }
         if (drafts.size <= MAX_CLEAN_DRAFTS) break
     }
+}
+
+async function ensureDraft(id: number): Promise<Draft> {
+    const existing = drafts.get(id)
+    if (existing) return existing
+    const note = await window.personal.archiveNote(id)
+    const afterAwait = drafts.get(id)
+    if (afterAwait) return afterAwait
+    const created: Draft = {
+        text: note.text,
+        version: note.version,
+        dirty: false,
+        error: "",
+    }
+    drafts.set(id, created)
+    pruneDrafts(id)
+    notify(id)
+    return created
 }
 
 async function saveDraft(id: number) {
@@ -88,7 +105,7 @@ const useStyles = makeStyles({
         boxSizing: "border-box",
     },
     inner: {
-        maxHeight: "240px",
+        maxHeight: "280px",
         overflowY: "auto",
         display: "grid",
         gap: "8px",
@@ -104,16 +121,31 @@ const useStyles = makeStyles({
         color: "var(--neutralSecondary)",
         fontSize: "12px",
     },
+    chipsSection: {
+        display: "grid",
+        gap: "6px",
+        paddingTop: "4px",
+        borderTop: "1px solid var(--neutralQuaternaryAlt)",
+    },
+    chipsLabel: {
+        fontSize: "12px",
+        color: "var(--neutralSecondary)",
+    },
     chips: {
         display: "flex",
         gap: "6px",
         flexWrap: "wrap",
     },
+    chipBtn: {
+        height: "28px",
+        padding: "0 10px",
+        fontSize: "12px",
+        borderRadius: "999px",
+    },
     pickerWrap: {
         display: "grid",
         gap: "8px",
         paddingTop: "4px",
-        borderTop: "1px solid var(--neutralQuaternaryAlt)",
     },
     actionsRow: {
         display: "flex",
@@ -128,7 +160,6 @@ export function useArticleNotesState(id: number) {
     const [, update] = useState(0)
     const [error, setError] = useState("")
     const [members, setMembers] = useState<number[]>([])
-    const [folderId, setFolderId] = useState<number>()
     const [busy, setBusy] = useState(false)
     const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
     const draft = drafts.get(id)
@@ -143,23 +174,9 @@ export function useArticleNotesState(id: number) {
         listeners.set(id, list)
 
         if (!drafts.has(id)) {
-            void window.personal
-                .archiveNote(id)
-                .then(note => {
-                    if (!drafts.has(id)) {
-                        drafts.set(id, {
-                            text: note.text,
-                            version: note.version,
-                            dirty: false,
-                            error: "",
-                        })
-                        pruneDrafts(id)
-                    }
-                    change()
-                })
-                .catch(e => {
-                    if (active) setError(String(e))
-                })
+            void ensureDraft(id).catch(e => {
+                if (active) setError(String(e))
+            })
         }
 
         const loadMembers = () =>
@@ -197,6 +214,32 @@ export function useArticleNotesState(id: number) {
         [id]
     )
 
+    const appendQuote = useCallback(
+        async (rawQuote: string) => {
+            const trimmed = (rawQuote || "").trim()
+            if (!trimmed) return
+            try {
+                const current = await ensureDraft(id)
+                const quotedBlock =
+                    trimmed
+                        .split(/\r?\n/)
+                        .map(line => `> ${line}`)
+                        .join("\n") + "\n\n"
+                const prefix = current.text.trim()
+                    ? current.text.replace(/\s*$/, "\n\n")
+                    : ""
+                current.text = prefix + quotedBlock
+                current.dirty = true
+                notify(id)
+                clearTimeout(timer.current)
+                await saveDraft(id)
+            } catch (e) {
+                setError(String(e))
+            }
+        },
+        [id]
+    )
+
     const saveNow = useCallback(() => {
         clearTimeout(timer.current)
         void saveDraft(id)
@@ -218,13 +261,15 @@ export function useArticleNotesState(id: number) {
             })
     }, [id])
 
-    const applyFolder = useCallback(
-        async (remove = false, member?: number) => {
+    const toggleFolder = useCallback(
+        async (targetFolderId: number) => {
+            if (!targetFolderId) return
+            const isMember = members.includes(targetFolderId)
             setBusy(true)
             try {
                 const result = await window.personal.archiveApply([id], {
-                    kind: remove ? "remove" : "folder",
-                    folderId: remove ? member : folderId,
+                    kind: isMember ? "remove" : "folder",
+                    folderId: targetFolderId,
                 })
                 await dispatch(refreshArchive(result))
                 setError("")
@@ -234,7 +279,7 @@ export function useArticleNotesState(id: number) {
                 setBusy(false)
             }
         },
-        [dispatch, folderId, id]
+        [dispatch, id, members]
     )
 
     return {
@@ -242,12 +287,11 @@ export function useArticleNotesState(id: number) {
         members,
         error,
         busy,
-        folderId,
-        setFolderId,
         updateText,
+        appendQuote,
         saveNow,
         retryConflict,
-        applyFolder,
+        toggleFolder,
     }
 }
 
@@ -269,12 +313,10 @@ export function ArticleNotesDrawer({
         members,
         error,
         busy,
-        folderId,
-        setFolderId,
         updateText,
         saveNow,
         retryConflict,
-        applyFolder,
+        toggleFolder,
     } = state
 
     useEffect(() => {
@@ -328,6 +370,7 @@ export function ArticleNotesDrawer({
                         label="文章备注"
                         placeholder="记下读后感、摘录或待办事项，支持全文检索…"
                         multiline
+                        autoAdjustHeight
                         rows={2}
                         value={draft?.text || ""}
                         disabled={!draft}
@@ -344,46 +387,53 @@ export function ArticleNotesDrawer({
                             </DefaultButton>
                         </div>
                     )}
-                    {members.length > 0 && (
-                        <div className={classes.chips}>
-                            {members.map(member => {
-                                const folder = folders.find(
-                                    f => f.id === member
-                                )
-                                return (
-                                    <DefaultButton
-                                        key={member}
-                                        disabled={busy}
-                                        title="移出此文件夹"
-                                        onClick={() =>
-                                            void applyFolder(true, member)
-                                        }>
-                                        {folder
-                                            ? folderLabel(folder, folders)
-                                            : "文件夹"}{" "}
-                                        ×
-                                    </DefaultButton>
-                                )
-                            })}
+                    {folders.length > 0 && folders.length <= 12 && (
+                        <div className={classes.chipsSection}>
+                            <span className={classes.chipsLabel}>
+                                点击直接归入或移出文件夹：
+                            </span>
+                            <div
+                                className={classes.chips}
+                                role="group"
+                                aria-label="归类文件夹">
+                                {folders.map(folder => {
+                                    const inFolder = members.includes(folder.id)
+                                    const label = folderLabel(folder, folders)
+                                    return (
+                                        <DefaultButton
+                                            key={folder.id}
+                                            className={classes.chipBtn}
+                                            disabled={busy}
+                                            checked={inFolder}
+                                            aria-pressed={inFolder}
+                                            title={
+                                                inFolder
+                                                    ? `点击将文章移出「${label}」`
+                                                    : `点击将文章归入「${label}」`
+                                            }
+                                            onClick={() =>
+                                                void toggleFolder(folder.id)
+                                            }>
+                                            {inFolder ? "✓ " : "＋ "}
+                                            {label}
+                                        </DefaultButton>
+                                    )
+                                })}
+                            </div>
                         </div>
                     )}
                     <div className={classes.pickerWrap}>
                         <FolderPicker
                             compact
-                            value={folderId}
-                            onChange={setFolderId}
+                            memberIds={members}
+                            onChange={selectedId =>
+                                void toggleFolder(selectedId)
+                            }
                             disabled={busy}
                             trailingActions={
-                                <>
-                                    <PrimaryButton
-                                        disabled={busy || !folderId}
-                                        onClick={() => void applyFolder()}>
-                                        加入文件夹
-                                    </PrimaryButton>
-                                    <DefaultButton onClick={onClose}>
-                                        收起面板
-                                    </DefaultButton>
-                                </>
+                                <DefaultButton onClick={onClose}>
+                                    收起面板
+                                </DefaultButton>
                             }
                         />
                     </div>

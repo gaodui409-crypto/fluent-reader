@@ -27,6 +27,9 @@ const ALLOWED_ITEM_FIELDS = new Set([
     "hasRead",
     "starred",
     "readLater",
+    "highlight",
+    "notify",
+    "saveRequested",
 ])
 
 export class ArchiveBatches {
@@ -49,13 +52,31 @@ export class ArchiveBatches {
                 "unstar",
                 "later",
                 "unlater",
+                "highlight",
+                "notify",
+                "offline",
             ].includes(action?.kind)
         )
             throw new Error("不支持该整理动作。")
-        if (action.kind === "folder" || action.kind === "remove")
+        if (action.kind === "folder")
             this.folders.requireFolder(action.folderId)
+        if (action.kind === "remove")
+            this.folders.requireFolder(action.folderId ?? action.fromFolderId)
         if (action.fromFolderId !== undefined)
             this.folders.requireFolder(action.fromFolderId)
+        if (
+            action.highlight !== undefined &&
+            (typeof action.highlight !== "string" ||
+                action.highlight.length > 64)
+        )
+            throw new Error("高亮颜色设置无效。")
+        if (action.notify !== undefined && typeof action.notify !== "boolean")
+            throw new Error("通知提醒设置无效。")
+        if (
+            action.autoOffline !== undefined &&
+            typeof action.autoOffline !== "boolean"
+        )
+            throw new Error("离线保存设置无效。")
     }
 
     apply(
@@ -91,10 +112,10 @@ export class ArchiveBatches {
         }
 
         const selectItem = this.db.prepare(
-            "SELECT _id,serviceRef,kept,feedHidden,hidden,hasRead,starred,readLater FROM items WHERE _id=?"
+            "SELECT _id,serviceRef,kept,feedHidden,hidden,hasRead,starred,readLater,highlight,notify,saveRequested FROM items WHERE _id=?"
         )
         const selectMembership = this.db.prepare(
-            "SELECT folderId,stamp FROM folder_articles WHERE folderId=? AND itemId=?"
+            "SELECT folderId,stamp FROM folder_articles WHERE itemId=? AND (folderId=? OR folderId IN (SELECT id FROM article_folders WHERE parentId=?))"
         )
         const deleteMembership = this.db.prepare(
             "DELETE FROM folder_articles WHERE folderId=? AND itemId=?"
@@ -126,7 +147,7 @@ export class ArchiveBatches {
                     added: [],
                     removed: [],
                 }
-                const set = (field: string, value: number) => {
+                const set = (field: string, value: number | string) => {
                     if (!ALLOWED_ITEM_FIELDS.has(field)) return
                     if (item[field] !== value) {
                         change.fields[field] = {
@@ -137,13 +158,14 @@ export class ArchiveBatches {
                     }
                 }
                 const remove = (folderId: number) => {
-                    const membership = selectMembership.get(
+                    const memberships = selectMembership.all(
+                        id,
                         folderId,
-                        id
-                    ) as Membership
-                    if (membership) {
+                        folderId
+                    ) as Membership[]
+                    for (const membership of memberships) {
                         change.removed.push(membership)
-                        deleteMembership.run(folderId, id)
+                        deleteMembership.run(membership.folderId, id)
                     }
                 }
                 if (action.kind === "folder") {
@@ -166,7 +188,7 @@ export class ArchiveBatches {
                     if (action.feedHidden) set("feedHidden", 1)
                 }
                 if (action.kind === "remove") {
-                    remove(action.folderId)
+                    remove((action.folderId ?? action.fromFolderId)!)
                     set("kept", 1)
                 }
                 if (action.kind === "hide") set("hidden", 1)
@@ -180,6 +202,21 @@ export class ArchiveBatches {
                     set("starred", action.kind === "star" ? 1 : 0)
                 if (action.kind === "later" || action.kind === "unlater")
                     set("readLater", action.kind === "later" ? 1 : 0)
+                if (action.kind === "highlight")
+                    set("highlight", String(action.highlight ?? "").trim())
+                if (action.kind === "notify") set("notify", 1)
+                if (action.kind === "offline") set("saveRequested", 1)
+
+                if (
+                    action.kind !== "highlight" &&
+                    typeof action.highlight === "string" &&
+                    action.highlight.trim()
+                ) {
+                    set("highlight", action.highlight.trim())
+                }
+                if (action.notify) set("notify", 1)
+                if (action.autoOffline) set("saveRequested", 1)
+
                 if (
                     change.added.length ||
                     change.removed.length ||
@@ -223,7 +260,7 @@ export class ArchiveBatches {
         }
 
         const selectItem = this.db.prepare(
-            "SELECT _id,serviceRef,kept,feedHidden,hidden,hasRead,starred,readLater FROM items WHERE _id=?"
+            "SELECT _id,serviceRef,kept,feedHidden,hidden,hasRead,starred,readLater,highlight,notify,saveRequested FROM items WHERE _id=?"
         )
         const selectAllMemberships = this.db.prepare(
             "SELECT folderId,stamp FROM folder_articles WHERE itemId=? ORDER BY folderId"

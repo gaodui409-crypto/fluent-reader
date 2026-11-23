@@ -115,7 +115,7 @@ Maintainer validation scripts (unit + Playwright Electron smoke suites) live in 
 | `context-menu.tsx` & `context-menu/` | Contextual menus split into `ItemContextMenu`, `WebviewContextMenus`, `ViewContextMenu`, `FeedScopeContextMenus`, `shared` |
 | `article.tsx` & `article/` | Article reader split into `ArticleToolbar`, `ArticleReaderSurface` (direct JS payload rendering without URL length limits), `articleMenus`, `useArticleShortcuts` |
 | `personal/archive-workspace.tsx` & `personal/archive/` | Filter & archive UI split into `ArticleSelectionBar`, `OrganizeDialog`, `ArchiveQueryForm`, `ArchivePreviewList`, `ArchiveActionForm`, `ArchiveRulesSection`, `useOrganizeState` |
-| `personal/` | `ai.tsx` (inline summary/translation reader panel + briefings modal), `article-notes.tsx` (collapsible notes & folder drawer), `folders.tsx`, `search.tsx`, `source-settings.tsx`, `subscriptions.tsx`, `linuxdo.tsx`, `tags.tsx`, `reading-controls.tsx` |
+| `personal/` | `ai.tsx` (inline summary/translation reader panel + briefings modal), `ai-markdown.tsx` (lightweight safe Markdown renderer), `article-notes.tsx` (collapsible notes & folder drawer), `folders.tsx`, `search.tsx`, `source-settings.tsx`, `subscriptions.tsx`, `linuxdo.tsx`, `reading-controls.tsx` |
 | `settings/personal.tsx` & `settings/personal/` | Personal settings tab split into `usePersonalSettings`, `AccountsAndRulesSections`, `ContentAndBackupSections`, `NetworkHealthShortcutsSections` |
 | `cards/`, `feeds/`, `utils/` | Card variants (`default-card`, `list-card`, `magazine-card`, `compact-card`), virtualized feeds, `FlatButton` primitives, hooks |
 

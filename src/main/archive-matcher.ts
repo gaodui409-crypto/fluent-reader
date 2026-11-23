@@ -9,6 +9,25 @@ import {
     archiveMatches,
 } from "../archive-types"
 
+export function isArchiveQueryConstrained(query: ArchiveQuery): boolean {
+    return Boolean(
+        query.include?.trim() ||
+            query.exclude?.trim() ||
+            (query.regex !== undefined && query.regex !== "") ||
+            (query.sids && query.sids.length > 0) ||
+            query.gid !== undefined ||
+            query.start !== undefined ||
+            query.end !== undefined ||
+            (query.readState !== undefined && query.readState !== "all") ||
+            query.unfolderedOnly ||
+            query.starredOnly
+    )
+}
+
+export function isUnconstrainedArchiveQuery(query: ArchiveQuery): boolean {
+    return !isArchiveQueryConstrained(query)
+}
+
 export function validateArchiveQuery(query: ArchiveQuery) {
     if (
         !query ||
@@ -46,6 +65,21 @@ export function validateArchiveQuery(query: ArchiveQuery) {
         query.start >= query.end
     )
         throw new Error("结束日期需要晚于开始日期。")
+    if (
+        query.readState !== undefined &&
+        !["all", "unread", "read"].includes(query.readState)
+    )
+        throw new Error("阅读状态筛选条件无效。")
+    if (
+        query.unfolderedOnly !== undefined &&
+        typeof query.unfolderedOnly !== "boolean"
+    )
+        throw new Error("未归档筛选条件无效。")
+    if (
+        query.starredOnly !== undefined &&
+        typeof query.starredOnly !== "boolean"
+    )
+        throw new Error("星标筛选条件无效。")
 }
 
 function hasFtsTable(db: Database.Database): boolean {
@@ -82,6 +116,19 @@ export function queryArchiveRows(
     if (query.end !== undefined) {
         conditions.push("i.date < ?")
         params.push(query.end)
+    }
+    if (query.readState === "unread") {
+        conditions.push("i.hasRead = 0")
+    } else if (query.readState === "read") {
+        conditions.push("i.hasRead = 1")
+    }
+    if (query.starredOnly) {
+        conditions.push("i.starred = 1")
+    }
+    if (query.unfolderedOnly) {
+        conditions.push(
+            "NOT EXISTS (SELECT 1 FROM folder_articles fa WHERE fa.itemId=i._id)"
+        )
     }
 
     const ftsAvailable = hasFtsTable(db)
@@ -124,11 +171,14 @@ export function queryArchiveRows(
     const whereClause = conditions.length
         ? "WHERE " + conditions.join(" AND ")
         : ""
+    const metaColumns =
+        "i.hasRead,i.starred,EXISTS(SELECT 1 FROM folder_articles fa WHERE fa.itemId=i._id) AS inFolder"
 
     if (!needsBody) {
         return db
             .prepare(
                 `SELECT i._id AS id,i.title,i.link,i.date,coalesce(i.creator,'') AS author,coalesce(s.name,'已退订来源') AS source,
+                ${metaColumns},
                 '' AS body
                 FROM items i LEFT JOIN sources s ON s.sid=i.source
                 ${whereClause} ORDER BY i.date DESC,i._id DESC`
@@ -140,6 +190,7 @@ export function queryArchiveRows(
         return db
             .prepare(
                 `SELECT i._id AS id,i.title,i.link,i.date,coalesce(i.creator,'') AS author,coalesce(s.name,'已退订来源') AS source,
+                ${metaColumns},
                 coalesce(f.body, html_text(i.content))||char(10)||coalesce(c.fullText,'')||char(10)||coalesce(c.offlineText,'') AS body
                 FROM items i
                 LEFT JOIN sources s ON s.sid=i.source
@@ -153,12 +204,15 @@ export function queryArchiveRows(
     return db
         .prepare(
             `SELECT i._id AS id,i.title,i.link,i.date,coalesce(i.creator,'') AS author,coalesce(s.name,'已退订来源') AS source,
+            ${metaColumns},
             html_text(i.content)||char(10)||coalesce(c.fullText,'')||char(10)||coalesce(c.offlineText,'') AS body
             FROM items i LEFT JOIN sources s ON s.sid=i.source LEFT JOIN article_content c ON c.itemId=i._id
             ${whereClause} ORDER BY i.date DESC,i._id DESC`
         )
         .all(...params) as ArchiveRow[]
 }
+
+export const loadCandidateRows = queryArchiveRows
 
 function resolveWorkerScriptPath(): string {
     const sibling = path.join(__dirname, "archive-worker.js")

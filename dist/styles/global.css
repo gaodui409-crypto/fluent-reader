@@ -17,6 +17,7 @@
     --white: #fff;
     --whiteConstant: #fff;
     --primary: #0f6cbd;
+    --themePrimary: var(--primary);
     --sidebarBg: #f3f2f1;
     --navHeight: 32px;
     --sidebarWidth: 252px;
@@ -48,6 +49,7 @@
         --white: #1f1f1f;
         --whiteConstant: #fff;
         --primary: #2886de;
+        --themePrimary: var(--primary);
         --sidebarBg: #202020;
     }
 }
@@ -70,6 +72,7 @@
     --white: #1f1f1f;
     --whiteConstant: #fff;
     --primary: #2886de;
+    --themePrimary: var(--primary);
     --sidebarBg: #202020;
 }
 body.darwin {
@@ -139,7 +142,7 @@ body.linux {
     color: var(--neutralDark);
 }
 .ms-Button--commandBar.active .ms-Button-icon {
-    color: #005a9e;
+    color: var(--primary);
 }
 .ms-ActivityItem-activityTypeIcon,
 .ms-ActivityItem-timeStamp {
@@ -178,7 +181,8 @@ body.linux {
     user-select: none;
     overflow: hidden;
 }
-#root > nav span {
+#root > nav span.title,
+#root > nav span.refresh-status {
     z-index: 1;
     position: relative;
 }

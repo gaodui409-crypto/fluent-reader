@@ -7,7 +7,12 @@ import {
     DirectionalHint,
     Link,
 } from "@fluentui/react"
-import { AppLog, AppLogType, toggleLogMenu } from "../scripts/models/app"
+import {
+    AppLog,
+    AppLogType,
+    clearLogs,
+    toggleLogMenu,
+} from "../scripts/models/app"
 import Time from "./utils/time"
 import { useAppDispatch, useAppSelector } from "../scripts/reducer"
 import { showItemFromId } from "../scripts/models/page"
@@ -33,11 +38,35 @@ function LogMenu() {
                 target="#log-toggle"
                 role="log-menu"
                 directionalHint={DirectionalHint.bottomCenter}
-                calloutWidth={320}
-                calloutMaxHeight={240}
+                calloutWidth={340}
+                calloutMaxHeight={300}
                 onDismiss={() => dispatch(toggleLogMenu())}>
+                {logs.length > 0 && (
+                    <div
+                        style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            padding: "8px 12px 4px",
+                            borderBottom:
+                                "1px solid var(--neutralQuaternaryAlt)",
+                            fontSize: 12,
+                        }}>
+                        <span style={{ color: "var(--neutralSecondary)" }}>
+                            消息通知（{logs.length}）
+                        </span>
+                        <Link onClick={() => dispatch(clearLogs())}>
+                            清空通知
+                        </Link>
+                    </div>
+                )}
                 {logs.length == 0 ? (
-                    <p style={{ textAlign: "center" }}>
+                    <p
+                        style={{
+                            textAlign: "center",
+                            margin: "18px 12px",
+                            color: "var(--neutralSecondary)",
+                        }}>
                         {intl.get("log.empty")}
                     </p>
                 ) : (
@@ -62,7 +91,16 @@ function LogMenu() {
                                     )
                                 }
                                 comments={l.details}
-                                activityIcon={<Icon iconName={getLogIcon(l)} />}
+                                activityIcon={
+                                    <Icon
+                                        iconName={getLogIcon(l)}
+                                        style={
+                                            l.type === AppLogType.Failure
+                                                ? { color: "#d13438" }
+                                                : undefined
+                                        }
+                                    />
+                                }
                                 timeStamp={<Time date={l.time} />}
                                 key={i}
                                 style={{ margin: 12 }}

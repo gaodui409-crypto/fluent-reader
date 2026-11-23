@@ -10,6 +10,8 @@ import intl from "react-intl-universal"
 import { Icon, useTheme } from "@fluentui/react"
 import { useAppDispatch, useAppSelector } from "../scripts/reducer"
 import { saveReadingPreferences } from "../scripts/models/reading"
+import { toggleSearch } from "../scripts/models/page"
+import { clearReadLater } from "../scripts/models/library"
 import { FlatButton } from "./utils/FlatButton"
 import { makeStyles, mergeClasses } from "@griffel/react"
 import {
@@ -63,6 +65,7 @@ const useStyles = makeStyles({
         boxSizing: "border-box",
         backgroundColor: "var(--colorNeutralBackground1)",
         position: "relative",
+        overflow: "hidden",
     },
     paneHeader: {
         "::before": {
@@ -107,13 +110,32 @@ const useStyles = makeStyles({
         borderRight: "1px solid var(--neutralQuaternaryAlt)",
     },
     railButton: { width: "28px", height: "64px" },
-    listControl: {
-        width: "100%",
+    listHeader: {
+        display: "flex",
+        alignItems: "center",
         height: "32px",
-        lineHeight: "32px",
-        textAlign: "right",
-        paddingRight: "12px",
+        paddingLeft: "12px",
+        paddingRight: "4px",
+        borderBottom: "1px solid var(--neutralQuaternaryAlt)",
         flexShrink: 0,
+        gap: "4px",
+    },
+    listMeta: {
+        fontSize: "12px",
+        color: "var(--neutralSecondary)",
+        marginRight: "auto",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        userSelect: "none",
+    },
+    listActionBtn: {
+        width: "auto",
+        height: "26px",
+        lineHeight: "26px",
+        paddingLeft: "8px",
+        paddingRight: "8px",
+        borderRadius: "4px",
         fontSize: "12px",
         color: "var(--neutralSecondary)",
     },
@@ -140,6 +162,9 @@ export function ListView({
     const theme = useTheme()
     const dispatch = useAppDispatch()
     const collapsed = useAppSelector(s => s.reading.collapseList)
+    const searchOn = useAppSelector(s => s.page.searchOn)
+    const menuKey = useAppSelector(s => s.app.menuKey)
+    const feedCount = useAppSelector(s => s.feeds[feedId]?.iids?.length || 0)
     const [peek, setPeek] = useState(false)
     const menuActive = useAppSelector(
         s => s.app.contextMenu.type !== ContextMenuType.Hidden
@@ -164,6 +189,13 @@ export function ListView({
         if (menuActive) clearTimeout(hoverTimer.current)
         else if (!interaction.current.inside) conceal()
     }, [menuActive])
+
+    useEffect(() => {
+        if (searchOn && collapsed) {
+            clearTimeout(hoverTimer.current)
+            setPeek(true)
+        }
+    }, [searchOn, collapsed])
 
     useEffect(() => () => clearTimeout(hoverTimer.current), [])
 
@@ -251,22 +283,66 @@ export function ListView({
                     collapsed && classes.floating,
                     collapsed && !peek && classes.concealed
                 )}>
-                <FlatButton
-                    styleClass={classes.listControl}
-                    title={intl.get(
-                        collapsed ? "organize.pinList" : "organize.collapseList"
+                <div className={classes.listHeader}>
+                    <span className={classes.listMeta}>
+                        {feedCount > 0 ? `已加载 ${feedCount} 篇` : "暂无文章"}
+                    </span>
+                    {menuKey === "later:" && (
+                        <FlatButton
+                            styleClass={classes.listActionBtn}
+                            title={intl.get("personal.clearReadLater")}
+                            ariaLabel={intl.get("personal.clearReadLater")}
+                            onClick={() => {
+                                void dispatch(clearReadLater())
+                            }}>
+                            <Icon iconName="Broom" style={{ fontSize: 12 }} />{" "}
+                            清已读
+                        </FlatButton>
                     )}
-                    onClick={() => {
-                        setPeek(false)
-                        void dispatch(
-                            saveReadingPreferences({ collapseList: !collapsed })
-                        )
-                    }}>
-                    <Icon iconName={collapsed ? "Pinned" : "ChevronLeft"} />{" "}
-                    {intl.get(
-                        collapsed ? "organize.pinList" : "organize.collapseList"
-                    )}
-                </FlatButton>
+                    <FlatButton
+                        styleClass={classes.listActionBtn}
+                        title={`${intl.get("search")} (F2)`}
+                        ariaLabel={intl.get("search")}
+                        onClick={() => dispatch(toggleSearch())}>
+                        <Icon
+                            iconName="Search"
+                            style={{
+                                fontSize: 12,
+                                color: searchOn ? "var(--primary)" : undefined,
+                            }}
+                        />
+                    </FlatButton>
+                    <FlatButton
+                        styleClass={classes.listActionBtn}
+                        title={intl.get(
+                            collapsed
+                                ? "organize.pinList"
+                                : "organize.collapseList"
+                        )}
+                        ariaLabel={intl.get(
+                            collapsed
+                                ? "organize.pinList"
+                                : "organize.collapseList"
+                        )}
+                        onClick={() => {
+                            setPeek(false)
+                            void dispatch(
+                                saveReadingPreferences({
+                                    collapseList: !collapsed,
+                                })
+                            )
+                        }}>
+                        <Icon
+                            iconName={collapsed ? "Pinned" : "ChevronLeft"}
+                            style={{ fontSize: 12 }}
+                        />{" "}
+                        {intl.get(
+                            collapsed
+                                ? "organize.pinList"
+                                : "organize.collapseList"
+                        )}
+                    </FlatButton>
+                </div>
                 <ArticleSearch inline />
                 <div className={classes.feed}>
                     <Feed

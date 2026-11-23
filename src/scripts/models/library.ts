@@ -8,8 +8,23 @@ import { updateUnreadCounts } from "./source"
 import { getServiceHooks } from "./service"
 import type { OfflineTask } from "../../personal-types"
 
+export function notifyToast(
+    text: string,
+    kind: "info" | "success" | "error" = "info"
+) {
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(
+            new CustomEvent("personal-toast", {
+                detail: { text, kind },
+            })
+        )
+    }
+}
+
 export type LibraryState = {
     saved: number[]
+    notedIds?: number[]
+    folderedIds?: number[]
     offlineTasks?: Record<number, OfflineTask>
     removeLaterOnRead: boolean
     aiConfigured: boolean
@@ -19,6 +34,8 @@ export type LibraryState = {
 export function libraryReducer(
     state: LibraryState = {
         saved: [],
+        notedIds: [],
+        folderedIds: [],
         offlineTasks: {},
         removeLaterOnRead: false,
         aiConfigured: false,
@@ -43,11 +60,15 @@ export function saveOffline(id: number): AppThunk<Promise<void>> {
         try {
             await window.personal.saveOffline(id)
             await dispatch(loadLibrary())
+            notifyToast("离线网页已保存到本地", "success")
         } catch (error) {
             await dispatch(loadLibrary()).catch(() => {})
-            window.utils.showErrorBox(
-                intl.get("personal.offlineFailed"),
-                String(error)
+            notifyToast(
+                `${intl.get("personal.offlineFailed")}：${String(error).replace(
+                    /^Error:\s*/i,
+                    ""
+                )}`,
+                "error"
             )
         }
     }
@@ -58,10 +79,11 @@ export function deleteOffline(id: number): AppThunk<Promise<void>> {
         try {
             await window.personal.deleteOffline?.(id)
             await dispatch(loadLibrary())
+            notifyToast("已删除本地离线副本", "info")
         } catch (error) {
-            window.utils.showErrorBox(
-                intl.get("personal.failed"),
-                String(error)
+            notifyToast(
+                `${intl.get("personal.failed")} ${String(error)}`,
+                "error"
             )
         }
     }
@@ -71,9 +93,9 @@ export function openOffline(id: number, reveal = false) {
     void window.personal
         .openOffline(id, reveal)
         .catch(error =>
-            window.utils.showErrorBox(
-                intl.get("personal.failed"),
-                String(error)
+            notifyToast(
+                `${intl.get("personal.failed")} ${String(error)}`,
+                "error"
             )
         )
 }
@@ -165,7 +187,10 @@ export function clearReadLater(): AppThunk<Promise<void>> {
                     eq(itemsTable.readLater, true)
                 )
             )
-        if (!rows.length) return
+        if (!rows.length) {
+            notifyToast("稍后读中没有已读文章需要清理", "info")
+            return
+        }
         const confirmed = await window.utils.showMessageBox(
             intl.get("personal.clearReadLater"),
             intl.get("organize.clearLaterConfirm", { count: rows.length }),

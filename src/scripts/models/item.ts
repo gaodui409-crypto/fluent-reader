@@ -86,7 +86,7 @@ export class RSSItem {
         this.fetchedDate = new Date()
         this.date = getValidDate(item.isoDate, item.pubDate, this.fetchedDate)
         this.creator = item.creator || item.author
-        if (isLinuxDo(source.url) && Array.isArray(item.categories))
+        if (false && isLinuxDo(source.url) && Array.isArray(item.categories))
             this.tags = [
                 ...new Set(
                     item.categories
@@ -188,6 +188,8 @@ export function updateItemMeta(
     changes: { tags?: string[]; readLater?: boolean }
 ): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
+        if (changes.readLater !== undefined)
+            pendingReadLaterEvictions.delete(item._id)
         if (changes.tags)
             changes.tags = [
                 ...new Set(changes.tags.map(tag => tag.trim()).filter(Boolean)),
@@ -387,7 +389,7 @@ export function fetchItems(
                 if (item.notify) dispatch(pushNotification(item))
             }
             if (background) {
-                if (inserted.length > 0) window.utils.requestAttention()
+                // Taskbar flashing disabled; sidebar (+N) delta tracks newly arrived items.
             } else dispatch(dismissItems())
         } catch (error) {
             dispatch({ type: REFRESH_STATUS, phase: "error" })
@@ -411,6 +413,39 @@ const markReadDone = (item: RSSItem): ItemActionTypes => ({
     item: item,
 })
 
+const pendingReadLaterEvictions = new Set<number>()
+
+if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", () => {
+        if (!pendingReadLaterEvictions.size) return
+        const ids = [...pendingReadLaterEvictions]
+        pendingReadLaterEvictions.clear()
+        void database
+            .update(itemsTable)
+            .set({ readLater: false })
+            .where(inArray(itemsTable._id, ids))
+            .catch(() => {})
+    })
+}
+
+export function flushPendingReadLaterEviction(
+    keepItemId: number | null = null
+): AppThunk {
+    return (dispatch, getState) => {
+        if (!pendingReadLaterEvictions.size) return
+        const state = getState()
+        for (const id of [...pendingReadLaterEvictions]) {
+            if (keepItemId !== null && id === keepItemId) continue
+            pendingReadLaterEvictions.delete(id)
+            if (!state.library.removeLaterOnRead) continue
+            const current = state.items[id]
+            if (current && current.hasRead && current.readLater) {
+                void dispatch(updateItemMeta(current, { readLater: false }))
+            }
+        }
+    }
+}
+
 const markUnreadDone = (item: RSSItem): ItemActionTypes => ({
     type: MARK_UNREAD,
     item: item,
@@ -433,7 +468,11 @@ export function markRead(
                 item.readLater &&
                 getState().library.removeLaterOnRead
             )
-                await dispatch(updateItemMeta(item, { readLater: false }))
+                if (getState().page.itemId === item._id) {
+                    pendingReadLaterEvictions.add(item._id)
+                } else {
+                    await dispatch(updateItemMeta(item, { readLater: false }))
+                }
             if (item.serviceRef) {
                 dispatch(dispatch(getServiceHooks()).markRead?.(item))
             }
@@ -526,6 +565,7 @@ export function markUnread(item: RSSItem): AppThunk<Promise<void>> {
                 .update(itemsTable)
                 .set({ hasRead: false })
                 .where(eq(itemsTable._id, item._id))
+            pendingReadLaterEvictions.delete(item._id)
             dispatch(markUnreadDone(item))
             if (item.serviceRef) {
                 dispatch(dispatch(getServiceHooks()).markUnread?.(item))

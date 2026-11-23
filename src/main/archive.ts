@@ -172,13 +172,15 @@ export class ArticleArchive {
         return true
     }
 
-    async afterInsert(ids: number[]) {
-        if (!ids.length) return
+    async afterInsert(
+        ids: number[]
+    ): Promise<{ notifyIds: number[]; offlineIds: number[] }> {
+        if (!ids.length) return { notifyIds: [], offlineIds: [] }
         this.syncLegacyTopics(ids)
         const enabledRules = this.rules().filter(r => r.enabled)
         if (!enabledRules.length) {
             this.changed()
-            return
+            return { notifyIds: [], offlineIds: [] }
         }
         // Fetch inserted rows once (including body if any enabled rule inspects full/body),
         // then filter by source scope in memory per rule instead of running N SQLite queries.
@@ -194,12 +196,15 @@ export class ArticleArchive {
             },
             ids
         )
+        const rowById = new Map(allInsertedRows.map(r => [r.id, r]))
         const itemSourceRows = this.db
             .prepare(
                 "SELECT _id,source FROM items WHERE _id IN (SELECT value FROM json_each(?))"
             )
             .all(JSON.stringify(ids)) as { _id: number; source: number }[]
         const sourceById = new Map(itemSourceRows.map(r => [r._id, r.source]))
+        const notifyIds = new Set<number>()
+        const offlineIds = new Set<number>()
 
         for (const rule of enabledRules) {
             try {
@@ -217,11 +222,32 @@ export class ArticleArchive {
                 if (!candidates.length) continue
                 const matches = await this.matcher.match(rule.query, candidates)
                 if (matches.length) {
-                    this.batchStore.apply(
-                        matches.map(r => r.id),
-                        rule.action,
-                        false
-                    )
+                    const matchedIds = matches.map(r => r.id)
+                    this.batchStore.apply(matchedIds, rule.action, false)
+                    for (const matchedId of matchedIds) {
+                        const row = rowById.get(matchedId)
+                        if (row) {
+                            if (rule.action.kind === "read") row.hasRead = 1
+                            else if (rule.action.kind === "unread")
+                                row.hasRead = 0
+                            if (rule.action.kind === "star") row.starred = 1
+                            else if (rule.action.kind === "unstar")
+                                row.starred = 0
+                            if (rule.action.kind === "folder") row.inFolder = 1
+                        }
+                        if (
+                            rule.action.kind === "notify" ||
+                            rule.action.notify
+                        ) {
+                            notifyIds.add(matchedId)
+                        }
+                        if (
+                            rule.action.kind === "offline" ||
+                            rule.action.autoOffline
+                        ) {
+                            offlineIds.add(matchedId)
+                        }
+                    }
                 }
             } catch (error) {
                 this.db
@@ -233,6 +259,16 @@ export class ArticleArchive {
             }
         }
         this.changed()
+        return {
+            notifyIds: [...notifyIds],
+            offlineIds: [...offlineIds],
+        }
+    }
+
+    applyIncoming(
+        ids: number[]
+    ): Promise<{ notifyIds: number[]; offlineIds: number[] }> {
+        return this.afterInsert(ids)
     }
 
     retireSource(sid: number) {

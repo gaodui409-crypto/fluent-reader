@@ -19,6 +19,7 @@ export interface PersonalSettings {
     removeLaterOnRead: boolean
     rssHub: string
     staleDays: number
+    loginHosts?: string[]
 }
 
 export const defaultPersonalSettings: PersonalSettings = {
@@ -33,6 +34,7 @@ export const defaultPersonalSettings: PersonalSettings = {
     removeLaterOnRead: false,
     rssHub: "https://rsshub.app",
     staleDays: 30,
+    loginHosts: [],
 }
 
 export interface IndexProgress {
@@ -48,6 +50,7 @@ export interface SearchHit {
     excerpt: string
     source: string
     rank: number
+    date?: number
 }
 
 export interface QueueTask {
@@ -89,6 +92,27 @@ export interface FullArticle {
     cached: boolean
 }
 
+export interface ExtractionPreview {
+    title: string
+    html: string
+    textLength: number
+}
+
+export interface ForumFloor {
+    floor: number
+    author: string
+    createdAt: string
+    html: string
+    likes: number
+}
+
+export interface WebAccountInfo {
+    host: string
+    count: number
+    subscribed?: boolean
+    explicit?: boolean
+}
+
 export type PersonalReply<T> =
     | { ok: true; data: T }
     | { ok: false; error: string }
@@ -97,6 +121,7 @@ export interface DiscoveredFeed {
     url: string
     title: string
 }
+
 export interface SourceHealth {
     sid: number
     name: string
@@ -112,39 +137,79 @@ export interface SourceHealth {
     stale: boolean
     service: boolean
 }
+
 export type AIKind = "title" | "summary" | "translation"
+
+export interface AIProfile {
+    id: string
+    name: string
+    baseURL: string
+    model: string
+    summaryModel?: string
+    translateModel?: string
+    hasKey: boolean
+}
+
 export interface AIConfig {
     baseURL: string
     model: string
+    summaryModel?: string
+    translateModel?: string
     targetLanguage: string
     dailyBriefing: boolean
     briefingHour: number
+    activeProfileId?: string
 }
+
 export interface AISettings extends AIConfig {
     hasKey: boolean
     configured: boolean
+    profiles?: AIProfile[]
 }
+
+export interface BilingualBlock {
+    source: string
+    target: string
+    isCode?: boolean
+}
+
 export interface AIResult {
     text: string
     tokens: number | null
     cached: boolean
     original?: string
+    blocks?: BilingualBlock[]
 }
+
+export interface AIStreamEvent {
+    requestId: string
+    id: number
+    kind: AIKind
+    text: string
+    chunkIndex?: number
+    chunkCount?: number
+    done?: boolean
+}
+
 export interface AIArticleState {
     summary?: string
     translation?: string
     original?: string
+    blocks?: BilingualBlock[]
 }
+
 export interface BriefingTopic {
     topic: string
     entries: { id: number; title: string; link: string; summary: string }[]
 }
+
 export interface Briefing {
     id: number
     createdAt: number
     topics: BriefingTopic[]
     tokens: number | null
 }
+
 export interface AIUsage {
     month: number
     unknownCalls: number

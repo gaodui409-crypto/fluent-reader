@@ -15,6 +15,10 @@ import type {
 } from "../source-preferences"
 import type {
     FullArticle,
+    ExtractionPreview,
+    ForumFloor,
+    WebAccountInfo,
+    SiteExtractionRule,
     PersonalReply,
     PersonalSettings,
     PersonalStatus,
@@ -25,6 +29,7 @@ import type {
     AISettings,
     AIKind,
     AIResult,
+    AIStreamEvent,
     AIArticleState,
     AIUsage,
     Briefing,
@@ -45,6 +50,8 @@ const personalBridge = {
         invoke<LinuxDoChoice[]>("linuxDoCatalog", kind, query),
     linuxDoAccount: () => invoke<LinuxDoAccount>("linuxDoAccount"),
     linuxDoOpen: () => invoke<boolean>("linuxDoOpen"),
+    linuxDoReplies: (url: string) =>
+        invoke<ForumFloor[]>("linuxDoReplies", url),
     archiveFolders: () => invoke<ArticleFolder[]>("archiveFolders"),
     archiveMemberships: (id: number) =>
         invoke<number[]>("archiveMemberships", id),
@@ -86,9 +93,35 @@ const personalBridge = {
     aiSettings: () => invoke<AISettings>("aiSettings"),
     saveAI: (config: AIConfig, key?: string) =>
         invoke<AISettings>("saveAI", config, key),
+    aiSaveProfile: (
+        profile: {
+            id?: string
+            name: string
+            baseURL: string
+            model: string
+            summaryModel?: string
+            translateModel?: string
+        },
+        key?: string,
+        removeKey = false
+    ) => invoke<AISettings>("aiSaveProfile", profile, key, removeKey),
+    aiSelectProfile: (id: string) => invoke<AISettings>("aiSelectProfile", id),
+    aiDeleteProfile: (id: string) => invoke<AISettings>("aiDeleteProfile", id),
+    aiModels: (baseURL: string, key?: string, profileId?: string) =>
+        invoke<string[]>("aiModels", baseURL, key, profileId),
     testAI: () => invoke<AIResult>("testAI"),
-    aiGenerate: (id: number, kind: AIKind, force = false) =>
-        invoke<AIResult>("aiGenerate", id, kind, force),
+    aiGenerate: (id: number, kind: AIKind, force = false, requestId = "") =>
+        invoke<AIResult>("aiGenerate", id, kind, force, requestId),
+    aiCancel: (requestId: string) => invoke<boolean>("aiCancel", requestId),
+    onAIStream: (callback: (ev: AIStreamEvent) => void) => {
+        const listener = (_: unknown, ev: AIStreamEvent) => callback(ev)
+        ipcRenderer.on("personal:aiStream", listener)
+        return () => {
+            ipcRenderer.removeListener("personal:aiStream", listener)
+        }
+    },
+    aiTranslateSelection: (text: string) =>
+        invoke<string>("aiTranslateSelection", text),
     aiArticleState: (id: number) =>
         invoke<AIArticleState>("aiArticleState", id),
     aiUsage: () => invoke<AIUsage>("aiUsage"),
@@ -98,6 +131,8 @@ const personalBridge = {
     library: () =>
         invoke<{
             saved: number[]
+            notedIds?: number[]
+            folderedIds?: number[]
             offlineTasks?: Record<number, OfflineTask>
             removeLaterOnRead: boolean
             aiConfigured: boolean
@@ -107,6 +142,9 @@ const personalBridge = {
     openOffline: (id: number, reveal = false) =>
         invoke<boolean>("openOffline", id, reveal),
     deleteOffline: (id: number) => invoke<boolean>("deleteOffline", id),
+    openPath: (targetPath: string) => invoke<boolean>("openPath", targetPath),
+    previewExtraction: (url: string, rule?: Partial<SiteExtractionRule>) =>
+        invoke<ExtractionPreview>("previewExtraction", url, rule),
     onChanged: (callback: () => void) => {
         const listener = () => callback()
         ipcRenderer.on("personal:changed", listener)
@@ -114,13 +152,20 @@ const personalBridge = {
             ipcRenderer.removeListener("personal:changed", listener)
         }
     },
-    tags: () => invoke<string[]>("tags"),
     preferences: () => invoke<PreferenceOverrides>("preferences"),
     savePreferences: (
         target: { sids: number[] } | { gid: number },
         patch: Partial<SourcePreferences>,
-        clear: (keyof SourcePreferences)[]
-    ) => invoke<PreferenceOverrides>("savePreferences", target, patch, clear),
+        clear: (keyof SourcePreferences)[],
+        clearChildSources = false
+    ) =>
+        invoke<PreferenceOverrides>(
+            "savePreferences",
+            target,
+            patch,
+            clear,
+            clearChildSources
+        ),
     afterInsert: (ids: number[]) => invoke<boolean>("afterInsert", ids),
     notifyItem: (id: number) => invoke<boolean>("notifyItem", id),
     onOpenArticle: (callback: (id: number) => void) => {
@@ -146,7 +191,7 @@ const personalBridge = {
         mode?: "direct" | "rendered",
         collection?: string
     ) => invoke<FullArticle>("fullText", id, force, mode, collection),
-    accounts: () => invoke<{ host: string; count: number }[]>("accounts"),
+    accounts: () => invoke<WebAccountInfo[]>("accounts"),
     clearAccount: (host: string) => invoke<boolean>("clearAccount", host),
     login: (url: string) => invoke<boolean>("login", url),
 }

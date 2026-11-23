@@ -4,15 +4,33 @@ import { makeStyles, mergeClasses } from "@griffel/react"
 
 const useStyles = makeStyles({
     handle: {
-        position: "absolute",
-        top: 0,
-        bottom: 0,
-        width: "8px",
-        zIndex: 1001,
-        cursor: "ew-resize",
-        touchAction: "none",
-        userSelect: "none",
-        WebkitAppRegion: "no-drag",
+        "position": "absolute",
+        "top": 0,
+        "bottom": 0,
+        "width": "8px",
+        "zIndex": 1001,
+        "cursor": "ew-resize",
+        "touchAction": "none",
+        "userSelect": "none",
+        "WebkitAppRegion": "no-drag",
+        "::after": {
+            content: '""',
+            position: "absolute",
+            left: "3px",
+            top: 0,
+            bottom: 0,
+            width: "2px",
+            backgroundColor: "transparent",
+            transition: "background-color 0.14s ease",
+        },
+        ":hover::after": {
+            backgroundColor: "var(--primary)",
+        },
+    },
+    handleActive: {
+        "::after": {
+            backgroundColor: "var(--primary)",
+        },
     },
     shield: {
         // Guest webviews must not take the pointer as the divider crosses them.
@@ -96,6 +114,7 @@ export function ResizeHandle({
             <div
                 className={mergeClasses(
                     classes.handle,
+                    resizing && classes.handleActive,
                     cursor === "col-resize" && classes.columnCursor,
                     styleClass
                 )}

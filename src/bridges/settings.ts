@@ -42,11 +42,17 @@ const settingsBridge = {
     toggleProxyStatus: () => {
         ipcRenderer.send("toggle-proxy-status")
     },
+    getProxyMode: (): "direct" | "pac" => {
+        return ipcRenderer.sendSync("get-proxy-mode")
+    },
+    setProxyMode: (mode: "direct" | "pac") => {
+        return ipcRenderer.invoke("set-proxy-mode", mode)
+    },
     getProxy: (): string => {
         return ipcRenderer.sendSync("get-proxy")
     },
     setProxy: (address: string = null) => {
-        ipcRenderer.invoke("set-proxy", address)
+        return ipcRenderer.invoke("set-proxy", address)
     },
 
     getDefaultView: (): ViewType => {

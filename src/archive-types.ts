@@ -17,23 +17,34 @@ export interface ArchiveQuery {
     gid?: number
     start?: number
     end?: number
+    readState?: "all" | "unread" | "read"
+    unfolderedOnly?: boolean
+    starredOnly?: boolean
 }
 
+export type ArchiveActionKind =
+    | "folder"
+    | "remove"
+    | "hide"
+    | "restore"
+    | "read"
+    | "unread"
+    | "star"
+    | "unstar"
+    | "later"
+    | "unlater"
+    | "highlight"
+    | "notify"
+    | "offline"
+
 export interface ArchiveAction {
-    kind:
-        | "folder"
-        | "remove"
-        | "hide"
-        | "restore"
-        | "read"
-        | "unread"
-        | "star"
-        | "unstar"
-        | "later"
-        | "unlater"
+    kind: ArchiveActionKind
     folderId?: number
     fromFolderId?: number
     feedHidden?: boolean
+    highlight?: string
+    notify?: boolean
+    autoOffline?: boolean
 }
 
 export interface ArchiveRule {
@@ -53,6 +64,9 @@ export interface ArchiveRow {
     body: string
     author: string
     date: number
+    hasRead?: number
+    starred?: number
+    inFolder?: number
     excerpt?: { text: string; start: number; length: number }
 }
 
@@ -70,7 +84,10 @@ export interface ArticleNote {
 export interface ArchiveChange {
     id: number
     serviceRef?: string
-    fields: Record<string, { before: number; after: number }>
+    fields: Record<
+        string,
+        { before: number | string | null; after: number | string | null }
+    >
 }
 
 export interface ArchiveResult {
@@ -141,6 +158,10 @@ export function archiveExcerpt(query: ArchiveQuery, row: ArchiveRow) {
 
 // Kept self-contained so the same matcher runs in a terminable worker.
 export function archiveMatches(query: ArchiveQuery, row: ArchiveRow): boolean {
+    if (query.readState === "unread" && row.hasRead) return false
+    if (query.readState === "read" && row.hasRead === 0) return false
+    if (query.unfolderedOnly && row.inFolder) return false
+    if (query.starredOnly && row.starred === 0) return false
     const value =
         query.field === "full"
             ? row.title + "\n" + row.body

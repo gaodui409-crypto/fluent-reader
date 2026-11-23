@@ -1,10 +1,13 @@
 import * as React from "react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { DefaultButton, PrimaryButton } from "@fluentui/react"
 import { makeStyles, mergeClasses } from "@griffel/react"
 import { ArchiveAction, ArchiveResult } from "../../../archive-types"
 import { useAppDispatch, useAppSelector } from "../../../scripts/reducer"
 import { refreshArchive } from "../../../scripts/models/archive"
+import { loadLibrary } from "../../../scripts/models/library"
+import { FeedFilter } from "../../../scripts/models/feed"
+import { hasOpenOverlayModal } from "../../article/useArticleShortcuts"
 import { FolderPicker } from "../folders"
 
 const useStyles = makeStyles({
@@ -48,13 +51,22 @@ export function ArticleSelectionBar() {
     const selected = useAppSelector(s => s.organize.selected)
     const settings = useAppSelector(s => s.app.settings.display)
     const menu = useAppSelector(s => s.app.menu)
+    const itemOpen = useAppSelector(s => s.page.itemId !== null)
     const feed = useAppSelector(s => s.feeds[s.page.feedId])
+    const items = useAppSelector(s => s.items)
     const [folders, setFolders] = useState(false)
     const [folderId, setFolderId] = useState<number>()
     const [busy, setBusy] = useState(false)
     const [message, setMessage] = useState("")
     const [result, setResult] = useState<ArchiveResult>()
     const ref = useRef<HTMLElement>(null)
+
+    const loadedIds = useMemo(() => {
+        if (!feed) return []
+        return feed.iids.filter(
+            iid => items[iid] && FeedFilter.testItem(feed.filter, items[iid])
+        )
+    }, [feed, items])
 
     useEffect(() => {
         const receive = (
@@ -66,6 +78,35 @@ export function ArticleSelectionBar() {
         window.addEventListener("archive-result", receive)
         return () => window.removeEventListener("archive-result", receive)
     }, [])
+
+    useEffect(() => {
+        if (!selected.length || settings || itemOpen) return
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (
+                e.key !== "Escape" ||
+                e.defaultPrevented ||
+                e.ctrlKey ||
+                e.altKey ||
+                e.metaKey
+            )
+                return
+            if (hasOpenOverlayModal()) return
+            const target = e.target as HTMLElement | null
+            if (
+                target &&
+                (target.tagName === "INPUT" ||
+                    target.tagName === "TEXTAREA" ||
+                    target.tagName === "SELECT" ||
+                    target.isContentEditable)
+            )
+                return
+            e.preventDefault()
+            dispatch({ type: "CLEAR_SELECTION" })
+            setFolders(false)
+        }
+        document.addEventListener("keydown", onKeyDown)
+        return () => document.removeEventListener("keydown", onKeyDown)
+    }, [dispatch, itemOpen, selected.length, settings])
 
     useEffect(() => {
         const n = ref.current
@@ -94,9 +135,11 @@ export function ArticleSelectionBar() {
             const r = await window.personal.archiveApply(selected, action)
             setResult(r)
             setFolders(false)
-            setMessage(
-                `已处理 ${r.count} 篇${await dispatch(refreshArchive(r))}`
-            )
+            const syncMsg = await dispatch(refreshArchive(r))
+            if (action.kind === "offline") {
+                await dispatch(loadLibrary()).catch(() => {})
+            }
+            setMessage(`已处理 ${r.count} 篇${syncMsg}`)
         } catch (e) {
             setMessage(String(e))
         } finally {
@@ -125,6 +168,9 @@ export function ArticleSelectionBar() {
 
     if (settings || (!selected.length && !message)) return null
 
+    const allLoadedSelected =
+        loadedIds.length > 0 && loadedIds.every(id => selected.includes(id))
+
     return (
         <section
             ref={ref}
@@ -134,6 +180,19 @@ export function ArticleSelectionBar() {
             {!!selected.length && (
                 <>
                     <strong>已选 {selected.length} 篇</strong>
+                    {loadedIds.length > 1 && !allLoadedSelected && (
+                        <DefaultButton
+                            disabled={busy}
+                            onClick={() =>
+                                dispatch({
+                                    type: "SELECT_ARTICLES",
+                                    selected: loadedIds,
+                                    anchor: loadedIds[0] ?? null,
+                                })
+                            }>
+                            全选已加载
+                        </DefaultButton>
+                    )}
                     <PrimaryButton
                         disabled={busy}
                         onClick={() => void run({ kind: "read" })}>
@@ -148,6 +207,11 @@ export function ArticleSelectionBar() {
                         disabled={busy}
                         onClick={() => void run({ kind: "later" })}>
                         稍后读
+                    </DefaultButton>
+                    <DefaultButton
+                        disabled={busy}
+                        onClick={() => void run({ kind: "offline" })}>
+                        保存到本地
                     </DefaultButton>
                     <DefaultButton
                         disabled={busy}

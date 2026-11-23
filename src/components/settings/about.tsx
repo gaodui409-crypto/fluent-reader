@@ -1,17 +1,25 @@
 import * as React from "react"
 import intl from "react-intl-universal"
-import { Stack, Link } from "@fluentui/react"
+import { Stack, Link, Separator } from "@fluentui/react"
+import { ShortcutsSection } from "./personal/NetworkHealthShortcutsSections"
 
 const AboutTab: React.FC = () => {
     return (
         <div className="tab-body">
-            <Stack className="settings-about" horizontalAlign="center">
+            <ShortcutsSection />
+            <div style={{ marginTop: 24 }}>
+                <Separator>{intl.get("settings.about")}</Separator>
+            </div>
+            <Stack
+                className="settings-about"
+                horizontalAlign="center"
+                tokens={{ childrenGap: 6 }}>
                 <img
                     src="icons/logo.svg"
                     alt="Fluent Reader Logo"
-                    style={{ width: 120, height: 120 }}
+                    style={{ width: 88, height: 88 }}
                 />
-                <h3 style={{ fontWeight: 600 }}>Fluent Reader</h3>
+                <h3 style={{ fontWeight: 600 }}>Fluent Reader Personal</h3>
                 <small>
                     {intl.get("settings.version")}{" "}
                     {globalThis.utils.getVersion()}
@@ -22,17 +30,7 @@ const AboutTab: React.FC = () => {
                 <Stack
                     horizontal
                     horizontalAlign="center"
-                    tokens={{ childrenGap: 12 }}>
-                    <small>
-                        <Link
-                            onClick={() =>
-                                globalThis.utils.openExternal(
-                                    "https://github.com/yang991178/fluent-reader/wiki/Support#keyboard-shortcuts"
-                                )
-                            }>
-                            {intl.get("settings.shortcuts")}
-                        </Link>
-                    </small>
+                    tokens={{ childrenGap: 16 }}>
                     <small>
                         <Link
                             onClick={() =>

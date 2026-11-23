@@ -193,6 +193,23 @@ export function useArticleView(
         () => toggleMode(SourceOpenTarget.FullContent),
         [toggleMode]
     )
+
+    const forceFullText = useCallback(() => {
+        if (
+            !item.link.startsWith("https://") &&
+            !item.link.startsWith("http://")
+        )
+            return
+        setView(v => ({
+            ...v,
+            mode: SourceOpenTarget.FullContent,
+            fullContent: "",
+            loaded: false,
+            error: "",
+            reloadCount: v.reloadCount + 1,
+        }))
+    }, [item.link])
+
     const reload = () => {
         if (loadFull) {
             setView(v => ({
@@ -222,6 +239,7 @@ export function useArticleView(
         markLocalReady,
         toggleWebpage,
         toggleFull,
+        forceFullText,
         reload,
     }
 }

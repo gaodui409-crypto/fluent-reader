@@ -1,6 +1,6 @@
 import * as React from "react"
-import intl from "react-intl-universal"
-import { Icon } from "@fluentui/react"
+import { useState } from "react"
+import { ContextualMenu, Icon } from "@fluentui/react"
 import { makeStyles, tokens, Tree } from "@fluentui/react-components"
 import type { ArticleFolder } from "../../archive-types"
 import { useAppDispatch } from "../../scripts/reducer"
@@ -10,14 +10,35 @@ import { openFolders } from "../personal/folders"
 import { MenuTreeItem } from "./MenuTreeItem"
 
 const useClasses = makeStyles({
-    sectionHeader: {
+    headerRow: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
         marginTop: "14px",
         marginBottom: "4px",
         marginLeft: "12px",
-        marginRight: "12px",
+        marginRight: "8px",
+        userSelect: "none",
+    },
+    sectionHeader: {
         fontSize: "12px",
         color: tokens.colorNeutralForeground3,
-        userSelect: "none",
+    },
+    headerBtn: {
+        "border": "none",
+        "background": "transparent",
+        "padding": "2px 6px",
+        "borderRadius": "4px",
+        "cursor": "pointer",
+        "fontSize": "12px",
+        "color": tokens.colorNeutralForeground3,
+        "display": "inline-flex",
+        "alignItems": "center",
+        "gap": "4px",
+        ":hover": {
+            backgroundColor: tokens.colorSubtleBackgroundHover,
+            color: tokens.colorNeutralForeground1,
+        },
     },
     subtleIcon: {
         color: tokens.colorNeutralForeground3,
@@ -33,10 +54,15 @@ const useClasses = makeStyles({
 export const MenuFoldersAndTagsSection: React.FC<{
     selected: string
     folders: ArticleFolder[]
-    tags: string[]
-}> = ({ selected, folders, tags }) => {
+    unfiledCount?: number
+}> = ({ selected, folders, unfiledCount = 0 }) => {
     const c = useClasses()
     const dispatch = useAppDispatch()
+    const [ctxMenu, setCtxMenu] = useState<{
+        folder: ArticleFolder
+        x: number
+        y: number
+    } | null>(null)
 
     const moveFolder = (draggedId: number, parentId: number | null) => {
         const from = folders.find(f => f.id === draggedId)
@@ -50,10 +76,28 @@ export const MenuFoldersAndTagsSection: React.FC<{
             .catch(e => window.utils.showErrorBox("无法移动文件夹", String(e)))
     }
 
+    const markFolderAllRead = async (folderId: number) => {
+        try {
+            const rows = (await window.db.execute(
+                "SELECT DISTINCT fa.itemId FROM folder_articles fa JOIN article_folders f ON f.id=fa.folderId JOIN items i ON i._id=fa.itemId WHERE f.deleted=0 AND (f.id=? OR f.parentId=?) AND i.hasRead=0",
+                [folderId, folderId],
+                "all"
+            )) as [number][]
+            const ids = rows.map(r => Number(r[0])).filter(Boolean)
+            if (!ids.length) return
+            const result = await window.personal.archiveApply(ids, {
+                kind: "read",
+            })
+            await dispatch(refreshArchive(result))
+        } catch (e) {
+            window.utils.showErrorBox("操作失败", String(e))
+        }
+    }
+
     return (
         <>
             <div
-                className={c.sectionHeader}
+                className={c.headerRow}
                 onDragOver={e => e.preventDefault()}
                 onDrop={e => {
                     e.preventDefault()
@@ -62,20 +106,30 @@ export const MenuFoldersAndTagsSection: React.FC<{
                     )
                     if (id) moveFolder(id, null)
                 }}>
-                文章归档
+                <span
+                    className={c.sectionHeader}
+                    title="将子文件夹拖到此处可移回顶层">
+                    文章归档
+                </span>
+                <button
+                    type="button"
+                    className={c.headerBtn}
+                    title="＋管理文章文件夹"
+                    aria-label="＋管理文章文件夹"
+                    onClick={() => openFolders()}>
+                    <Icon iconName="FabricNewFolder" style={{ fontSize: 12 }} />
+                    <span>管理</span>
+                </button>
             </div>
-            <MenuTreeItem
-                value="folder-manager"
-                icon={
-                    <Icon iconName="FabricNewFolder" className={c.subtleIcon} />
-                }
-                label="＋管理文章文件夹"
-                onClick={() => openFolders()}
-            />
             <MenuTreeItem
                 value="library:"
                 icon={<Icon iconName="Library" className={c.subtleIcon} />}
                 label="未分类文章"
+                aside={
+                    unfiledCount > 0 ? (
+                        <span className={c.countText}>{unfiledCount}</span>
+                    ) : undefined
+                }
                 isSelected={selected === "library:"}
                 onClick={() =>
                     dispatch(selectCollection("library", "", "未分类文章"))
@@ -99,9 +153,11 @@ export const MenuFoldersAndTagsSection: React.FC<{
                                 />
                             }
                             aside={
-                                <span className={c.countText}>
-                                    {folder.count}
-                                </span>
+                                folder.count > 0 ? (
+                                    <span className={c.countText}>
+                                        {folder.count}
+                                    </span>
+                                ) : undefined
                             }
                             itemType={children.length ? "branch" : "leaf"}
                             isSelected={selected === "folder:" + folder.id}
@@ -116,7 +172,11 @@ export const MenuFoldersAndTagsSection: React.FC<{
                             }
                             onContextMenu={e => {
                                 e.preventDefault()
-                                openFolders(folder.id)
+                                setCtxMenu({
+                                    folder,
+                                    x: e.clientX,
+                                    y: e.clientY,
+                                })
                             }}
                             draggable
                             onDragStart={e =>
@@ -142,9 +202,12 @@ export const MenuFoldersAndTagsSection: React.FC<{
                                             value={"folder:" + child.id}
                                             label={child.name}
                                             aside={
-                                                <span className={c.countText}>
-                                                    {child.count}
-                                                </span>
+                                                child.count > 0 ? (
+                                                    <span
+                                                        className={c.countText}>
+                                                        {child.count}
+                                                    </span>
+                                                ) : undefined
                                             }
                                             isSelected={
                                                 selected ===
@@ -163,7 +226,11 @@ export const MenuFoldersAndTagsSection: React.FC<{
                                             }
                                             onContextMenu={e => {
                                                 e.preventDefault()
-                                                openFolders(child.id)
+                                                setCtxMenu({
+                                                    folder: child,
+                                                    x: e.clientX,
+                                                    y: e.clientY,
+                                                })
                                             }}
                                             draggable
                                             onDragStart={e =>
@@ -179,22 +246,57 @@ export const MenuFoldersAndTagsSection: React.FC<{
                         </MenuTreeItem>
                     )
                 })}
-            {tags
-                .filter(tag => !tag.startsWith("主题/"))
-                .map(tag => (
-                    <MenuTreeItem
-                        key={"tag:" + tag}
-                        value={"tag:" + tag}
-                        icon={<Icon iconName="Tag" className={c.subtleIcon} />}
-                        label={
-                            tag.startsWith("主题/")
-                                ? intl.get("organize.topicLabel") + tag.slice(3)
-                                : "#" + tag
-                        }
-                        isSelected={selected === "tag:" + tag}
-                        onClick={() => dispatch(selectCollection("tag", tag))}
-                    />
-                ))}
+            {ctxMenu && (
+                <ContextualMenu
+                    target={{ x: ctxMenu.x, y: ctxMenu.y }}
+                    onDismiss={() => setCtxMenu(null)}
+                    items={[
+                        {
+                            key: "markRead",
+                            text: "将此文件夹文章标为已读",
+                            iconProps: { iconName: "CheckMark" },
+                            onClick: () => {
+                                const id = ctxMenu.folder.id
+                                setCtxMenu(null)
+                                void markFolderAllRead(id)
+                            },
+                        },
+                        ...(ctxMenu.folder.parentId !== null
+                            ? [
+                                  {
+                                      key: "moveRoot",
+                                      text: "移回顶层文件夹",
+                                      iconProps: { iconName: "Up" },
+                                      onClick: () => {
+                                          const id = ctxMenu.folder.id
+                                          setCtxMenu(null)
+                                          moveFolder(id, null)
+                                      },
+                                  },
+                              ]
+                            : []),
+                        {
+                            key: "manage",
+                            text: "重命名 / 管理文件夹…",
+                            iconProps: { iconName: "Edit" },
+                            onClick: () => {
+                                const id = ctxMenu.folder.id
+                                setCtxMenu(null)
+                                openFolders(id)
+                            },
+                        },
+                        {
+                            key: "newFolder",
+                            text: "新建文件夹…",
+                            iconProps: { iconName: "FabricNewFolder" },
+                            onClick: () => {
+                                setCtxMenu(null)
+                                openFolders()
+                            },
+                        },
+                    ]}
+                />
+            )}
         </>
     )
 }

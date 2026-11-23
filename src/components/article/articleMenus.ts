@@ -3,42 +3,47 @@ import { ContextualMenuItemType, IContextualMenuProps } from "@fluentui/react"
 import { RSSItem } from "../../scripts/models/item"
 import { RSSSource, SourceTextDirection } from "../../scripts/models/source"
 import { shareSubmenu } from "../context-menu"
-import { editTags } from "../personal/tags"
 import { openOffline } from "../../scripts/models/library"
 import { platformCtrl } from "../../scripts/utils"
 
-export const FONT_SIZE_OPTIONS = [13, 14, 15, 16, 17, 18, 19, 20, 22]
+export const FONT_SIZE_OPTIONS = [13, 14, 15, 16, 17, 18, 19, 20, 22, 24]
 
 export function buildMoreMenuProps(opts: {
     item: RSSItem
     source: RSSSource
     savedOffline: boolean
+    canFetchFull: boolean
     loadFull: boolean
     loadWebpage: boolean
     fontFamily: string
     fontSize: number
-    onReload: () => void
+    onRefetchFull: () => void
     onToggleHidden: () => void
     onUpdateFont: (font: string) => void
     onUpdateFontSize: (size: number) => void
     onUpdateDirection: (dir: SourceTextDirection) => void
     onDeleteOffline: () => void
+    onOpenSiteRules: () => void
 }): IContextualMenuProps {
     const {
         item,
         source,
         savedOffline,
+        canFetchFull,
         loadFull,
         loadWebpage,
         fontFamily,
         fontSize,
-        onReload,
+        onRefetchFull,
         onToggleHidden,
         onUpdateFont,
         onUpdateFontSize,
         onUpdateDirection,
         onDeleteOffline,
+        onOpenSiteRules,
     } = opts
+
+    const hasHttpLink = /^https?:\/\//i.test(item.link)
 
     const fontSizeMenuProps: IContextualMenuProps = {
         items: FONT_SIZE_OPTIONS.map(size => ({
@@ -107,7 +112,7 @@ export function buildMoreMenuProps(opts: {
                       },
                       {
                           key: "deleteOffline",
-                          text: "删除离线网页",
+                          text: "删除本地副本",
                           iconProps: { iconName: "Delete" },
                           onClick: onDeleteOffline,
                       },
@@ -118,17 +123,38 @@ export function buildMoreMenuProps(opts: {
                   ]
                 : []),
             {
-                key: "tags",
-                text: intl.get("personal.editTags"),
-                iconProps: { iconName: "Tag" },
-                onClick: () => editTags(item._id),
-            },
-            {
                 key: "refetch",
                 text: intl.get("personal.refetch"),
-                disabled: !loadFull,
+                disabled: !hasHttpLink || (!canFetchFull && !loadFull),
                 iconProps: { iconName: "Refresh" },
-                onClick: onReload,
+                onClick: onRefetchFull,
+            },
+            {
+                key: "loginSite",
+                text: "登录此网站…",
+                disabled: !hasHttpLink,
+                iconProps: { iconName: "Permissions" },
+                onClick: () => {
+                    void window.personal
+                        .login(item.link)
+                        .catch(err =>
+                            window.utils.showErrorBox(
+                                intl.get("personal.failed"),
+                                String(err)
+                            )
+                        )
+                },
+            },
+            {
+                key: "siteRules",
+                text: "配置此站正文提取规则…",
+                disabled: !hasHttpLink,
+                iconProps: { iconName: "Settings" },
+                onClick: onOpenSiteRules,
+            },
+            {
+                key: "divider_site",
+                itemType: ContextualMenuItemType.Divider,
             },
             {
                 key: "openInBrowser",

@@ -10,20 +10,21 @@ import {
     MessageBarType,
     ProgressIndicator,
 } from "@fluentui/react"
-import { makeStyles } from "@griffel/react"
+import { makeStyles, mergeClasses } from "@griffel/react"
 import type { IndexProgress, SearchHit } from "../../personal-types"
-import { useAppDispatch } from "../../scripts/reducer"
+import { useAppDispatch, useAppSelector } from "../../scripts/reducer"
 import { database, itemsTable } from "../../scripts/db"
 import { eq } from "drizzle-orm"
 import { RSSItem, markRead } from "../../scripts/models/item"
 import { initFeedSuccess, RSSFeed } from "../../scripts/models/feed"
 import { showItem } from "../../scripts/models/page"
+import { exitSettings } from "../../scripts/models/app"
 
 const useStyles = makeStyles({
     results: {
         display: "flex",
         flexDirection: "column",
-        gap: "12px",
+        gap: "10px",
         maxHeight: "56vh",
         overflowY: "auto",
         marginTop: "14px",
@@ -34,7 +35,13 @@ const useStyles = makeStyles({
         flexDirection: "column",
         gap: "4px",
         borderBottom: "1px solid var(--neutralQuaternaryAlt)",
-        paddingBottom: "12px",
+        borderLeft: "3px solid transparent",
+        borderRadius: "4px",
+        padding: "6px 8px 10px",
+    },
+    hitActive: {
+        borderLeft: "3px solid var(--themePrimary)",
+        backgroundColor: "var(--neutralLighterAlt)",
     },
     title: {
         textAlign: "left",
@@ -62,6 +69,17 @@ const useStyles = makeStyles({
         padding: "0 2px",
     },
 })
+
+function formatHitDate(ts?: number): string {
+    if (!ts || !Number.isFinite(ts)) return ""
+    return new Date(ts).toLocaleString(undefined, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    })
+}
 
 function Highlight({
     text,
@@ -104,14 +122,18 @@ function Highlight({
 export default function FullSearch() {
     const classes = useStyles()
     const dispatch = useAppDispatch()
+    const settingsOpen = useAppSelector(s => s.app.settings.display)
+
     const [open, setOpen] = useState(false)
     const [query, setQuery] = useState("")
     const [hits, setHits] = useState<SearchHit[]>([])
+    const [activeIndex, setActiveIndex] = useState(-1)
     const [error, setError] = useState("")
     const [index, setIndex] = useState<IndexProgress>()
     const [busy, setBusy] = useState(false)
     const [more, setMore] = useState(false)
     const generation = useRef(0)
+    const hitRefs = useRef<(HTMLDivElement | null)[]>([])
 
     useEffect(() => {
         const show = () => setOpen(true)
@@ -150,6 +172,7 @@ export default function FullSearch() {
         if (!open) return
         if (!query.trim()) {
             setHits([])
+            setActiveIndex(-1)
             setMore(false)
             setBusy(false)
             setError("")
@@ -162,6 +185,7 @@ export default function FullSearch() {
                 .then(result => {
                     if (current !== generation.current) return
                     setHits(result)
+                    setActiveIndex(result.length > 0 ? 0 : -1)
                     setMore(result.length === 50)
                     setError("")
                 })
@@ -199,6 +223,9 @@ export default function FullSearch() {
                 .where(eq(itemsTable._id, id))
             if (!row) throw new Error(intl.get("personal.missingArticle"))
             const item = row as unknown as RSSItem
+            if (settingsOpen) {
+                await dispatch(exitSettings())
+            }
             dispatch(
                 initFeedSuccess(new RSSFeed("PERSONAL_SEARCH", [item.source]), [
                     item,
@@ -209,6 +236,33 @@ export default function FullSearch() {
             setOpen(false)
         } catch (err) {
             setError(String(err))
+        }
+    }
+
+    function handleKeyDown(event: React.KeyboardEvent) {
+        if (event.nativeEvent.isComposing) return
+        if (!hits.length) return
+
+        if (event.key === "ArrowDown") {
+            event.preventDefault()
+            const next =
+                activeIndex < 0 ? 0 : Math.min(hits.length - 1, activeIndex + 1)
+            setActiveIndex(next)
+            hitRefs.current[next]?.scrollIntoView({ block: "nearest" })
+        } else if (event.key === "ArrowUp") {
+            event.preventDefault()
+            const next = activeIndex <= 0 ? 0 : activeIndex - 1
+            setActiveIndex(next)
+            hitRefs.current[next]?.scrollIntoView({ block: "nearest" })
+        } else if (event.key === "Enter") {
+            const targetEl = event.target as HTMLElement | null
+            if (targetEl?.tagName === "BUTTON") {
+                return
+            }
+            if (activeIndex >= 0 && activeIndex < hits.length) {
+                event.preventDefault()
+                void openArticle(hits[activeIndex].id)
+            }
         }
     }
 
@@ -232,71 +286,89 @@ export default function FullSearch() {
                     },
                 },
             }}>
-            <SearchBox
-                autoFocus
-                ariaLabel={intl.get("personal.search")}
-                placeholder={intl.get("personal.searchHint")}
-                value={query}
-                onChange={(_, value) => setQuery(value || "")}
-            />
-            {(busy || index?.running) && (
-                <ProgressIndicator
-                    label={
-                        index?.running
-                            ? intl.get("personal.indexProgress", {
-                                  done: index.indexed,
-                                  total: index.total,
-                              })
-                            : intl.get("personal.searching")
-                    }
-                    percentComplete={
-                        index?.running && index.total
-                            ? index.indexed / index.total
-                            : undefined
-                    }
+            <div onKeyDown={handleKeyDown}>
+                <SearchBox
+                    autoFocus
+                    spellCheck={false}
+                    autoCorrect="off"
+                    ariaLabel={intl.get("personal.search")}
+                    placeholder={intl.get("personal.searchHint")}
+                    value={query}
+                    onChange={(_, value) => setQuery(value || "")}
                 />
-            )}
-            {(error || index?.error) && (
-                <MessageBar messageBarType={MessageBarType.error}>
-                    {intl.get("personal.failed")} {error || index?.error}
-                </MessageBar>
-            )}
-            <div className={classes.results}>
-                {!busy && query.trim() && !hits.length && (
-                    <p style={{ color: "var(--neutralSecondary)" }}>
-                        {intl.get("personal.noResults")}
-                    </p>
+                {(busy || index?.running) && (
+                    <ProgressIndicator
+                        label={
+                            index?.running
+                                ? intl.get("personal.indexProgress", {
+                                      done: index.indexed,
+                                      total: index.total,
+                                  })
+                                : intl.get("personal.searching")
+                        }
+                        percentComplete={
+                            index?.running && index.total
+                                ? index.indexed / index.total
+                                : undefined
+                        }
+                    />
                 )}
-                {hits.map(hit => (
-                    <div className={classes.hit} key={hit.id}>
-                        <DefaultButton
-                            className={classes.title}
-                            onClick={() => void openArticle(hit.id)}>
-                            <Highlight
-                                text={hit.title}
-                                query={query}
-                                markClass={classes.mark}
-                            />
-                        </DefaultButton>
-                        <small className={classes.sourceMeta}>
-                            {hit.source}
-                        </small>
-                        <p className={classes.excerpt}>
-                            <Highlight
-                                text={hit.excerpt}
-                                query={query}
-                                markClass={classes.mark}
-                            />
+                {(error || index?.error) && (
+                    <MessageBar messageBarType={MessageBarType.error}>
+                        {intl.get("personal.failed")} {error || index?.error}
+                    </MessageBar>
+                )}
+                <div className={classes.results}>
+                    {!busy && query.trim() && !hits.length && (
+                        <p style={{ color: "var(--neutralSecondary)" }}>
+                            {intl.get("personal.noResults")}
                         </p>
-                    </div>
-                ))}
-                {more && (
-                    <DefaultButton
-                        disabled={busy}
-                        onClick={() => void loadMore()}>
-                        {intl.get("loadMore")}
-                    </DefaultButton>
-                )}
+                    )}
+                    {hits.map((hit, idx) => {
+                        const dateStr = formatHitDate(hit.date)
+                        const isActive = idx === activeIndex
+                        return (
+                            <div
+                                ref={el => {
+                                    hitRefs.current[idx] = el
+                                }}
+                                className={mergeClasses(
+                                    classes.hit,
+                                    isActive && classes.hitActive
+                                )}
+                                key={hit.id}
+                                onMouseEnter={() => setActiveIndex(idx)}>
+                                <DefaultButton
+                                    className={classes.title}
+                                    onClick={() => void openArticle(hit.id)}>
+                                    <Highlight
+                                        text={hit.title}
+                                        query={query}
+                                        markClass={classes.mark}
+                                    />
+                                </DefaultButton>
+                                <small className={classes.sourceMeta}>
+                                    {hit.source}
+                                    {dateStr ? ` · ${dateStr}` : ""}
+                                </small>
+                                <p className={classes.excerpt}>
+                                    <Highlight
+                                        text={hit.excerpt}
+                                        query={query}
+                                        markClass={classes.mark}
+                                    />
+                                </p>
+                            </div>
+                        )
+                    })}
+                    {more && (
+                        <DefaultButton
+                            disabled={busy}
+                            onClick={() => void loadMore()}>
+                            {intl.get("loadMore")}
+                        </DefaultButton>
+                    )}
+                </div>
             </div>
         </Dialog>
     )

@@ -4,7 +4,7 @@ import { makeStyles, mergeClasses } from "@fluentui/react-components"
 const useStyles = makeStyles({
     root: {
         "display": "inline-block",
-        "width": "var(--navHeight)",
+        "width": "14px",
         "height": "var(--navHeight)",
         "lineHeight": "var(--navHeight)",
         "fontSize": "12px",
@@ -26,5 +26,10 @@ export const FlatButtonSeparator: React.FC<FlatButtonSeparatorProps> = ({
 }) => {
     const classes = useStyles()
 
-    return <span className={mergeClasses(classes.root, styleClass)}></span>
+    return (
+        <span
+            role="separator"
+            aria-orientation="vertical"
+            className={mergeClasses(classes.root, styleClass)}></span>
+    )
 }

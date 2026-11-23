@@ -10,6 +10,19 @@ const useStyles = makeStyles({
         flexWrap: "wrap",
         alignItems: "end",
     },
+    statusRow: {
+        display: "flex",
+        gap: "14px",
+        flexWrap: "wrap",
+        alignItems: "end",
+    },
+    checkboxGroup: {
+        display: "flex",
+        gap: "14px",
+        flexWrap: "wrap",
+        alignItems: "center",
+        minHeight: "32px",
+    },
     advancedBox: {
         display: "grid",
         gap: "10px",
@@ -70,6 +83,46 @@ export const ArchiveQueryForm: React.FC<{
                 disabled={busy}
                 onChange={(_, v) => onChange({ exclude: v || "" })}
             />
+            <div className={c.statusRow}>
+                <Dropdown
+                    label="阅读状态"
+                    selectedKey={query.readState || "all"}
+                    disabled={busy}
+                    styles={{ root: { minWidth: 132 } }}
+                    options={[
+                        { key: "all", text: "不限" },
+                        { key: "unread", text: "仅未读" },
+                        { key: "read", text: "仅已读" },
+                    ]}
+                    onChange={(_, o) =>
+                        o &&
+                        onChange({
+                            readState:
+                                o.key === "all"
+                                    ? undefined
+                                    : (o.key as ArchiveQuery["readState"]),
+                        })
+                    }
+                />
+                <div className={c.checkboxGroup}>
+                    <Checkbox
+                        disabled={busy}
+                        label="仅未归入文件夹"
+                        checked={!!query.unfolderedOnly}
+                        onChange={(_, v) =>
+                            onChange({ unfolderedOnly: v ? true : undefined })
+                        }
+                    />
+                    <Checkbox
+                        disabled={busy}
+                        label="仅收藏"
+                        checked={!!query.starredOnly}
+                        onChange={(_, v) =>
+                            onChange({ starredOnly: v ? true : undefined })
+                        }
+                    />
+                </div>
+            </div>
             <div className={c.row}>
                 <Dropdown
                     label="匹配方式"

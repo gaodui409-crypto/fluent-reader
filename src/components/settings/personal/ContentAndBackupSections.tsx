@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useEffect, useState } from "react"
 import intl from "react-intl-universal"
 import {
     Checkbox,
@@ -6,6 +7,7 @@ import {
     Dropdown,
     MessageBar,
     MessageBarType,
+    PrimaryButton,
     ProgressIndicator,
     Separator,
     TextField,
@@ -26,8 +28,22 @@ const useStyles = makeStyles({
         border: "1px solid var(--neutralQuaternaryAlt)",
         backgroundColor: "var(--neutralLighterAlt)",
     },
+    summaryCard: {
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        padding: "12px 14px",
+        borderRadius: "6px",
+        border: "1px solid var(--neutralQuaternaryAlt)",
+        backgroundColor: "var(--neutralLighterAlt)",
+    },
     grow: { flexGrow: 1, minWidth: "200px" },
     hint: { color: "var(--neutralSecondary)", margin: 0, lineHeight: "1.6" },
+    lastBackup: {
+        fontSize: "13px",
+        color: "var(--neutralPrimary)",
+        margin: 0,
+    },
 })
 
 export const OfflineSaveSection: React.FC<{
@@ -35,6 +51,7 @@ export const OfflineSaveSection: React.FC<{
     status?: PersonalStatus
     busy: boolean
     onChooseFolder: () => void
+    onOpenOfflineFolder: () => void
     onToggleRemoveLater: (checked: boolean) => void
     onRetryTask: (id: number) => void
     onShowFile: (id: number) => void
@@ -43,13 +60,14 @@ export const OfflineSaveSection: React.FC<{
     status,
     busy,
     onChooseFolder,
+    onOpenOfflineFolder,
     onToggleRemoveLater,
     onRetryTask,
     onShowFile,
 }) => {
     const c = useStyles()
     return (
-        <section id="personal-offlineSave" role="tabpanel" className={c.panel}>
+        <section id="personal-offlineSave" className={c.panel}>
             <Separator>{intl.get("personal.offlineSave")}</Separator>
             <div className={c.row}>
                 <TextField
@@ -63,6 +81,9 @@ export const OfflineSaveSection: React.FC<{
                 />
                 <DefaultButton disabled={busy} onClick={onChooseFolder}>
                     {intl.get("personal.chooseFolder")}
+                </DefaultButton>
+                <DefaultButton disabled={busy} onClick={onOpenOfflineFolder}>
+                    打开离线网页目录
                 </DefaultButton>
             </div>
             <p className={c.hint}>{intl.get("personal.offlineHint")}</p>
@@ -109,8 +130,10 @@ export const BackupSection: React.FC<{
     status?: PersonalStatus
     busy: boolean
     onChooseFolder: () => void
+    onOpenBackupFolder: () => void
     onChangeSchedule: (s: PersonalSettings["backupSchedule"]) => void
-    onChangeKeep: (n: number) => void
+    onChangeKeep: (n: number, valid: boolean) => void
+    onBlurKeep: (clamped: number) => void
     onBackupNow: () => void
     onRestore: () => void
 }> = ({
@@ -118,29 +141,60 @@ export const BackupSection: React.FC<{
     status,
     busy,
     onChooseFolder,
+    onOpenBackupFolder,
     onChangeSchedule,
     onChangeKeep,
+    onBlurKeep,
     onBackupNow,
     onRestore,
 }) => {
     const c = useStyles()
+    const [keepText, setKeepText] = useState(String(settings.backupKeep))
+    const [focused, setFocused] = useState(false)
+
+    useEffect(() => {
+        if (!focused) {
+            setKeepText(String(settings.backupKeep))
+        }
+    }, [settings.backupKeep, focused])
+
     const scheduleOptions = (["off", "daily", "weekly"] as const).map(key => ({
         key,
         text: intl.get("personal." + key),
     }))
 
+    const formattedLastBackup =
+        settings.lastBackup > 0
+            ? new Date(settings.lastBackup).toLocaleString()
+            : "尚未备份"
+
     return (
-        <section id="personal-backup" role="tabpanel" className={c.panel}>
-            <Separator>{intl.get("personal.backup")}</Separator>
+        <section id="personal-backup" className={c.panel}>
+            <Separator>
+                全量打包备份（ZIP，含文章、备注、文件夹、订阅列表与离线网页）
+            </Separator>
+            <div className={c.summaryCard}>
+                <p className={c.lastBackup}>
+                    <strong>上次备份：</strong>
+                    {formattedLastBackup}
+                </p>
+                <p className={c.hint}>{intl.get("personal.backupHint")}</p>
+            </div>
             <div className={c.row}>
                 <TextField
                     className={c.grow}
                     readOnly
                     label={intl.get("personal.backupFolder")}
+                    placeholder="请选择全量备份 ZIP 存放目录"
                     value={settings.backupFolder}
                 />
                 <DefaultButton disabled={busy} onClick={onChooseFolder}>
                     {intl.get("personal.chooseFolder")}
+                </DefaultButton>
+                <DefaultButton
+                    disabled={busy || !settings.backupFolder}
+                    onClick={onOpenBackupFolder}>
+                    打开备份文件夹
                 </DefaultButton>
             </div>
             <div className={c.row}>
@@ -160,23 +214,44 @@ export const BackupSection: React.FC<{
                     min={1}
                     max={100}
                     label={intl.get("personal.keep")}
-                    value={String(settings.backupKeep)}
-                    onChange={(_, value) => onChangeKeep(Number(value))}
+                    value={keepText}
+                    onFocus={() => setFocused(true)}
+                    onChange={(_, value) => {
+                        const raw = value ?? ""
+                        setKeepText(raw)
+                        const parsed = Number(raw)
+                        if (
+                            raw.trim() !== "" &&
+                            Number.isFinite(parsed) &&
+                            parsed >= 1 &&
+                            parsed <= 100
+                        ) {
+                            onChangeKeep(Math.round(parsed), true)
+                        }
+                    }}
+                    onBlur={() => {
+                        setFocused(false)
+                        const parsed = Number(keepText)
+                        const clamped = Number.isFinite(parsed)
+                            ? Math.min(100, Math.max(1, Math.round(parsed)))
+                            : settings.backupKeep || 10
+                        setKeepText(String(clamped))
+                        onBlurKeep(clamped)
+                    }}
                 />
             </div>
             <div className={c.row}>
-                <DefaultButton
+                <PrimaryButton
                     disabled={busy || status?.backupRunning}
                     onClick={onBackupNow}>
                     {status?.backupRunning
                         ? "正在打包备份…"
                         : intl.get("personal.backupNow")}
-                </DefaultButton>
+                </PrimaryButton>
                 <DefaultButton disabled={busy} onClick={onRestore}>
                     {intl.get("personal.restore")}
                 </DefaultButton>
             </div>
-            <p className={c.hint}>{intl.get("personal.backupHint")}</p>
             {status?.backupWarning && (
                 <MessageBar messageBarType={MessageBarType.warning}>
                     {status.backupWarning}
@@ -198,7 +273,7 @@ export const SearchIndexSection: React.FC<{
 }> = ({ status, busy, onRebuild }) => {
     const c = useStyles()
     return (
-        <section id="personal-search" role="tabpanel" className={c.panel}>
+        <section id="personal-search" className={c.panel}>
             <Separator>{intl.get("personal.search")}</Separator>
             <div className={c.row}>
                 <DefaultButton

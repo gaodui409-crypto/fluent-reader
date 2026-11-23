@@ -5,12 +5,19 @@
     position: relative;
 }
 
-.magazine-feed,
-.compact-feed {
-    padding-top: 28px;
-    height: calc(100% - 60px);
+.magazine-feed {
+    padding-top: 16px;
+    height: calc(100% - var(--navHeight));
     overflow: hidden scroll;
     margin-top: var(--navHeight);
+    box-sizing: border-box;
+}
+.compact-feed {
+    padding-top: 4px;
+    height: calc(100% - var(--navHeight));
+    overflow: hidden scroll;
+    margin-top: var(--navHeight);
+    box-sizing: border-box;
 }
 .magazine-feed .ms-List-page {
     display: flex;
@@ -23,7 +30,7 @@
     flex-wrap: wrap;
     justify-content: space-around;
     padding: 12px;
-    height: calc(100% - 32px);
+    height: calc(100% - var(--navHeight));
     overflow: hidden scroll;
     margin-top: var(--navHeight);
     width: 100%;
@@ -36,8 +43,6 @@
 }
 .flex-fix {
     text-align: center;
-}
-.flex-fix {
     min-width: 280px;
 }
 .cards-feed-container > .empty,
@@ -45,9 +50,9 @@
 .magazine-feed > .empty,
 .compact-feed > .empty {
     width: 100%;
-    height: calc(100vh - 64px);
+    height: calc(100vh - 96px);
     display: flex;
-    justify-content: space-around;
+    justify-content: center;
     align-items: center;
     color: var(--neutralSecondary);
     font-size: 14px;
