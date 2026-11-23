@@ -16,13 +16,16 @@ export function validateConditions(conditions: RuleCondition[]) {
         throw new Error("A rule needs 1–30 conditions.")
     for (const condition of conditions) {
         if (
+            !condition ||
             !["title", "body", "author", "link"].includes(condition.field) ||
             !["contains", "notContains", "regex"].includes(
                 condition.operator
             ) ||
             typeof condition.value !== "string" ||
             !condition.value.trim() ||
-            condition.value.length > 2000
+            condition.value.length > 2000 ||
+            (condition.caseSensitive !== undefined &&
+                typeof condition.caseSensitive !== "boolean")
         )
             throw new Error("Invalid rule condition.")
         if (condition.operator === "regex")

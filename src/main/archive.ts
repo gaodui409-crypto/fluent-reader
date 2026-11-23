@@ -19,6 +19,7 @@ import {
 import { ArchiveFolders } from "./archive-folders"
 import { ArchiveNotes } from "./archive-notes"
 import { ArchiveBatches, protectedSQL } from "./archive-batches"
+import { archiveNeedsBody } from "../archive-types"
 
 export { protectedSQL }
 
@@ -150,8 +151,14 @@ export class ArticleArchive {
             typeof rule.enabled !== "boolean"
         )
             throw new Error("请填写 1～120 个字符的规则名称。")
+        const previous = this.rules().find(r => r.id === rule.id)
         const next: ArchiveRule = {
             ...rule,
+            migrationGroup:
+                previous &&
+                JSON.stringify(previous.query) === JSON.stringify(rule.query)
+                    ? previous.migrationGroup
+                    : undefined,
             name: rule.name.trim(),
             id: rule.id || randomUUID(),
             error: undefined,
@@ -184,9 +191,7 @@ export class ArticleArchive {
         }
         // Fetch inserted rows once (including body if any enabled rule inspects full/body),
         // then filter by source scope in memory per rule instead of running N SQLite queries.
-        const needsBody = enabledRules.some(
-            r => r.query.field === "full" || r.query.field === "body"
-        )
+        const needsBody = enabledRules.some(r => archiveNeedsBody(r.query))
         const allInsertedRows = this.rows(
             {
                 include: "",
@@ -203,8 +208,7 @@ export class ArticleArchive {
             )
             .all(JSON.stringify(ids)) as { _id: number; source: number }[]
         const sourceById = new Map(itemSourceRows.map(r => [r._id, r.source]))
-        const notifyIds = new Set<number>()
-        const offlineIds = new Set<number>()
+        const migratedMatches = new Map<string, ArchiveRow[]>()
 
         for (const rule of enabledRules) {
             try {
@@ -220,7 +224,14 @@ export class ArticleArchive {
                       )
                     : allInsertedRows
                 if (!candidates.length) continue
-                const matches = await this.matcher.match(rule.query, candidates)
+                const groupKey =
+                    rule.migrationGroup &&
+                    rule.migrationGroup + JSON.stringify(rule.query)
+                const matches =
+                    groupKey && migratedMatches.has(groupKey)
+                        ? migratedMatches.get(groupKey)
+                        : await this.matcher.match(rule.query, candidates)
+                if (groupKey) migratedMatches.set(groupKey, matches)
                 if (matches.length) {
                     const matchedIds = matches.map(r => r.id)
                     this.batchStore.apply(matchedIds, rule.action, false)
@@ -234,18 +245,16 @@ export class ArticleArchive {
                             else if (rule.action.kind === "unstar")
                                 row.starred = 0
                             if (rule.action.kind === "folder") row.inFolder = 1
-                        }
-                        if (
-                            rule.action.kind === "notify" ||
-                            rule.action.notify
-                        ) {
-                            notifyIds.add(matchedId)
-                        }
-                        if (
-                            rule.action.kind === "offline" ||
-                            rule.action.autoOffline
-                        ) {
-                            offlineIds.add(matchedId)
+                            if (rule.action.kind === "hide") row.hidden = 1
+                            if (rule.action.kind === "restore") {
+                                row.hidden = 0
+                                row.feedHidden = 0
+                            }
+                            if (
+                                rule.action.kind === "folder" &&
+                                rule.action.feedHidden
+                            )
+                                row.feedHidden = 1
                         }
                     }
                 }
@@ -259,9 +268,18 @@ export class ArticleArchive {
             }
         }
         this.changed()
+        const final = this.db
+            .prepare(
+                "SELECT _id,notify,saveRequested FROM items WHERE _id IN (SELECT value FROM json_each(?))"
+            )
+            .all(JSON.stringify(ids)) as {
+            _id: number
+            notify: number
+            saveRequested: number
+        }[]
         return {
-            notifyIds: [...notifyIds],
-            offlineIds: [...offlineIds],
+            notifyIds: final.filter(r => r.notify).map(r => r._id),
+            offlineIds: final.filter(r => r.saveRequested).map(r => r._id),
         }
     }
 

@@ -204,8 +204,10 @@ export class ArchiveBatches {
                     set("readLater", action.kind === "later" ? 1 : 0)
                 if (action.kind === "highlight")
                     set("highlight", String(action.highlight ?? "").trim())
-                if (action.kind === "notify") set("notify", 1)
-                if (action.kind === "offline") set("saveRequested", 1)
+                if (action.kind === "notify")
+                    set("notify", action.notify === false ? 0 : 1)
+                if (action.kind === "offline")
+                    set("saveRequested", action.autoOffline === false ? 0 : 1)
 
                 if (
                     action.kind !== "highlight" &&
@@ -214,8 +216,10 @@ export class ArchiveBatches {
                 ) {
                     set("highlight", action.highlight.trim())
                 }
-                if (action.notify) set("notify", 1)
-                if (action.autoOffline) set("saveRequested", 1)
+                if (action.notify !== undefined)
+                    set("notify", action.notify ? 1 : 0)
+                if (action.autoOffline !== undefined)
+                    set("saveRequested", action.autoOffline ? 1 : 0)
 
                 if (
                     change.added.length ||

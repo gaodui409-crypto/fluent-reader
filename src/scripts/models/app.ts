@@ -1,3 +1,4 @@
+import { loadStoredUnseen, saveStoredUnseen } from "../sidebar-state"
 import intl from "react-intl-universal"
 import {
     INIT_SOURCES,
@@ -75,44 +76,6 @@ export class AppLog {
         this.details = details
         this.iid = iid
         this.time = new Date()
-    }
-}
-
-const UNSEEN_STORAGE_KEY = "personal:unseenDelta"
-
-function loadStoredUnseen(): {
-    bySource: Record<number, number>
-    all: number
-} {
-    try {
-        const raw = localStorage.getItem(UNSEEN_STORAGE_KEY)
-        if (!raw) return { bySource: {}, all: 0 }
-        const parsed = JSON.parse(raw)
-        const bySource: Record<number, number> = {}
-        if (parsed?.bySource && typeof parsed.bySource === "object") {
-            for (const [k, v] of Object.entries(parsed.bySource)) {
-                const sid = Number(k)
-                const n = Number(v)
-                if (Number.isInteger(sid) && n > 0) bySource[sid] = n
-            }
-        }
-        return {
-            bySource,
-            all: Math.max(0, Number(parsed?.all) || 0),
-        }
-    } catch {
-        return { bySource: {}, all: 0 }
-    }
-}
-
-function saveStoredUnseen(bySource: Record<number, number>, all: number) {
-    try {
-        localStorage.setItem(
-            UNSEEN_STORAGE_KEY,
-            JSON.stringify({ bySource, all })
-        )
-    } catch {
-        // Ignore storage quota errors.
     }
 }
 
@@ -442,9 +405,6 @@ export function pushNotification(item: RSSItem): AppThunk {
         const sourceName =
             getState().sources[item.source]?.name ||
             intl.get("sources.untitled")
-        void window.personal.notifyItem(item._id).catch(error => {
-            console.error(error)
-        })
         dispatch({
             type: PUSH_NOTIFICATION,
             iid: item._id,

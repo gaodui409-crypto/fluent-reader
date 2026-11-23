@@ -1,7 +1,11 @@
 import * as React from "react"
 import { Checkbox, DefaultButton, Dropdown, TextField } from "@fluentui/react"
 import { makeStyles } from "@griffel/react"
-import { ArchiveQuery, archivePattern } from "../../../archive-types"
+import {
+    ArchiveQuery,
+    archivePattern,
+    summarizeArchiveConditions,
+} from "../../../archive-types"
 
 const useStyles = makeStyles({
     row: {
@@ -53,6 +57,7 @@ export const ArchiveQueryForm: React.FC<{
     busy,
 }) => {
     const c = useStyles()
+    const structured = Boolean(query.conditions || query.legacyFilter)
 
     return (
         <>
@@ -69,18 +74,38 @@ export const ArchiveQueryForm: React.FC<{
                 ]}
                 onChange={(_, o) => o && onScopeChange(String(o.key))}
             />
+            {structured && (
+                <div className={c.advancedBox}>
+                    <span>{summarizeArchiveConditions(query)}</span>
+                    <small>
+                        已保留旧规则条件；可调整范围和状态，或主动改为普通条件。
+                    </small>
+                    <DefaultButton
+                        disabled={busy}
+                        onClick={() =>
+                            onChange({
+                                conditions: undefined,
+                                logic: undefined,
+                                negate: undefined,
+                                legacyFilter: undefined,
+                            })
+                        }>
+                        改为普通条件
+                    </DefaultButton>
+                </div>
+            )}
             <TextField
                 label="包含这些内容"
                 placeholder="输入关键词或短语，多个词用逗号分隔"
                 value={query.include}
-                disabled={busy || query.regex !== undefined}
+                disabled={busy || structured || query.regex !== undefined}
                 onChange={(_, v) => onChange({ include: v || "" })}
             />
             <TextField
                 label="排除这些内容"
                 placeholder="可留空；包含这些词的文章会跳过"
                 value={query.exclude}
-                disabled={busy}
+                disabled={busy || structured}
                 onChange={(_, v) => onChange({ exclude: v || "" })}
             />
             <div className={c.statusRow}>
@@ -127,7 +152,7 @@ export const ArchiveQueryForm: React.FC<{
                 <Dropdown
                     label="匹配方式"
                     selectedKey={query.all ? "all" : "any"}
-                    disabled={busy}
+                    disabled={busy || structured}
                     options={[
                         { key: "any", text: "命中任意一个词" },
                         { key: "all", text: "同时命中所有词" },
@@ -137,7 +162,7 @@ export const ArchiveQueryForm: React.FC<{
                 <Dropdown
                     label="搜索内容"
                     selectedKey={query.field}
-                    disabled={busy}
+                    disabled={busy || structured}
                     options={[
                         { key: "full", text: "标题及本地正文" },
                         { key: "title", text: "仅标题" },
@@ -161,11 +186,15 @@ export const ArchiveQueryForm: React.FC<{
                     <TextField
                         label="等效正则表达式（预览）"
                         readOnly
-                        value={archivePattern(query)}
+                        value={
+                            structured
+                                ? summarizeArchiveConditions(query)
+                                : archivePattern(query)
+                        }
                     />
                     <Checkbox
-                        disabled={busy}
                         label="手动编写正则表达式"
+                        disabled={busy || structured}
                         checked={query.regex !== undefined}
                         onChange={(_, v) =>
                             onChange({
@@ -182,8 +211,8 @@ export const ArchiveQueryForm: React.FC<{
                         />
                     )}
                     <Checkbox
-                        disabled={busy}
                         label="区分大小写"
+                        disabled={busy || structured}
                         checked={!!query.caseSensitive}
                         onChange={(_, v) => onChange({ caseSensitive: !!v })}
                     />

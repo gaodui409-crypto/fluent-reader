@@ -27,6 +27,7 @@ import { OfflinePages } from "./offline"
 import { Subscriptions } from "./subscriptions"
 import { AI } from "./ai"
 import { ArticleArchive } from "./archive"
+import { validateArchiveQuery } from "./archive-matcher"
 import type {
     ArchiveAction,
     ArchiveActionKind,
@@ -68,156 +69,35 @@ const BLOCKED_OPEN_EXTENSIONS = new Set([
     ".jar",
 ])
 
-function escapeRegexLiteral(text: string): string {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
-
 function buildMigratedQuery(
     rule: StoredRule,
     scope: { sids?: number[]; gid?: number }
 ): ArchiveQuery {
-    if (Array.isArray(rule.conditions) && rule.conditions.length > 0) {
-        const conds = rule.conditions.filter(
-            c => c && typeof c.value === "string" && c.value.trim()
-        )
-        if (conds.length > 0) {
-            const fields = new Set(conds.map(c => c.field))
-            const field: ArchiveQuery["field"] =
-                fields.size === 1 ? conds[0].field : "full"
-            const caseSensitive = conds.some(c => Boolean(c.caseSensitive))
-            const hasRegex = conds.some(c => c.operator === "regex")
-
-            if (hasRegex) {
-                if (conds.length === 1 && conds[0].operator === "regex") {
-                    const pat = conds[0].value.trim()
-                    try {
-                        new RegExp(pat, "u")
-                        return {
-                            include: "",
-                            exclude: "",
-                            all: false,
-                            field,
-                            caseSensitive,
-                            regex:
-                                rule.match === false
-                                    ? `^(?![\\s\\S]*(?:${pat}))[\\s\\S]*$`
-                                    : pat,
-                            ...scope,
-                        }
-                    } catch {
-                        // Fall through to literal fallback if invalid in unicode mode.
-                    }
-                }
-                try {
-                    const parts = conds.map(c => {
-                        const v = c.value.trim()
-                        if (c.operator === "regex") return `(?:${v})`
-                        const lit = escapeRegexLiteral(v)
-                        return c.operator === "notContains"
-                            ? `^(?![\\s\\S]*${lit})[\\s\\S]*$`
-                            : lit
-                    })
-                    const combined =
-                        (rule.logic || "all") === "any"
-                            ? parts.join("|")
-                            : parts.map(p => `(?=[\\s\\S]*${p})`).join("") +
-                              "[\\s\\S]*"
-                    new RegExp(combined, "u")
-                    return {
-                        include: "",
-                        exclude: "",
-                        all: false,
-                        field,
-                        caseSensitive,
-                        regex: combined,
-                        ...scope,
-                    }
-                } catch {
-                    // Fall back to literal contains/notContains below.
-                }
-            }
-
-            const containsVals = conds
-                .filter(c => c.operator !== "notContains")
-                .map(c => c.value.trim())
-            const notContainsVals = conds
-                .filter(c => c.operator === "notContains")
-                .map(c => c.value.trim())
-
-            if (rule.match === false && !notContainsVals.length) {
-                return {
-                    include: "",
-                    exclude: containsVals.join(", "),
-                    all: false,
-                    field,
-                    caseSensitive,
-                    ...scope,
-                }
-            }
-            return {
-                include: containsVals.join(", "),
-                exclude: notContainsVals.join(", "),
-                all: (rule.logic || "all") === "all",
-                field,
-                caseSensitive,
-                ...scope,
-            }
+    if (
+        typeof rule.match !== "boolean" ||
+        (rule.enabled !== undefined && typeof rule.enabled !== "boolean")
+    )
+        throw new Error("旧规则的启用或取反设置无效。")
+    const query: ArchiveQuery = {
+        include: "",
+        exclude: "",
+        all: false,
+        field: "title",
+        ...scope,
+    }
+    if (rule.conditions !== undefined) {
+        query.conditions = rule.conditions.map(c => ({ ...c }))
+        query.logic = rule.logic ?? "all"
+        query.negate = rule.match === false
+    } else {
+        query.legacyFilter = {
+            type: rule.filter,
+            search: rule.search,
+            match: rule.match,
         }
     }
-
-    const filter = Number(rule.filter) || 0
-    const field: ArchiveQuery["field"] =
-        filter & (1 << 3)
-            ? "full"
-            : filter & (1 << 5)
-            ? "author"
-            : filter & (1 << 9)
-            ? "body"
-            : "title"
-    const caseSensitive = filter > 0 ? !(filter & (1 << 4)) : false
-    const isKeyword = Boolean(filter & (1 << 6))
-    const isExclude = Boolean(filter & (1 << 8)) !== (rule.match === false)
-    const search = String(rule.search || "").trim()
-
-    if (isKeyword || !search) {
-        const keywords = search
-            .split(/[\s,，;；]+/)
-            .filter(Boolean)
-            .join(", ")
-        return {
-            include: isExclude ? "" : keywords,
-            exclude: isExclude ? keywords : "",
-            all: !isExclude && Boolean(filter & (1 << 7)),
-            field,
-            caseSensitive,
-            ...scope,
-        }
-    }
-
-    try {
-        const regex = isExclude
-            ? `^(?![\\s\\S]*(?:${search}))[\\s\\S]*$`
-            : search
-        new RegExp(regex, "u")
-        return {
-            include: "",
-            exclude: "",
-            all: false,
-            field,
-            caseSensitive,
-            regex,
-            ...scope,
-        }
-    } catch {
-        return {
-            include: isExclude ? "" : search,
-            exclude: isExclude ? search : "",
-            all: false,
-            field,
-            caseSensitive,
-            ...scope,
-        }
-    }
+    validateArchiveQuery(query)
+    return query
 }
 
 export function migrateStoredRulesToArchiveRules(
@@ -240,7 +120,12 @@ export function migrateStoredRulesToArchiveRules(
         (groups || []).map(g => [g.gid, g.name || `分组 #${g.gid}`])
     )
 
-    for (const [targetKey, rules] of Object.entries(storedRules)) {
+    const rank = (key: string) =>
+        key === "all" ? 0 : key.startsWith("group:") ? 1 : 2
+    const entries = Object.entries(storedRules).sort(
+        ([a], [b]) => rank(a) - rank(b)
+    )
+    for (const [targetKey, rules] of entries) {
         if (!Array.isArray(rules) || !rules.length) continue
         let scope: { sids?: number[]; gid?: number } = {}
         let scopePrefix = ""
@@ -262,12 +147,39 @@ export function migrateStoredRulesToArchiveRules(
 
         for (let idx = 0; idx < rules.length; idx++) {
             const rule = rules[idx]
-            if (!rule || typeof rule !== "object") continue
             try {
-                const query = buildMigratedQuery(rule, scope)
+                if (
+                    !rule ||
+                    typeof rule !== "object" ||
+                    !Array.isArray(rule.actions) ||
+                    rule.actions.some(
+                        a =>
+                            typeof a !== "string" ||
+                            !/^[rshlno](?:-(?:true|false))?$/.test(a)
+                    ) ||
+                    (rule.tags !== undefined &&
+                        (!Array.isArray(rule.tags) ||
+                            rule.tags.some(t => typeof t !== "string")))
+                )
+                    throw new Error("旧规则的动作或标签格式损坏。")
+                let query: ArchiveQuery
+                let migrationError: string | undefined
+                try {
+                    query = buildMigratedQuery(rule, scope)
+                } catch (err) {
+                    migrationError =
+                        "旧规则无法安全迁移，请重新设置条件：" + String(err)
+                    query = {
+                        include: "",
+                        exclude: "",
+                        all: false,
+                        field: "title",
+                        ...scope,
+                    }
+                }
                 const primaryActions: ArchiveAction[] = []
-                let wantNotify = false
-                let wantOffline = false
+                let wantNotify: boolean | undefined
+                let wantOffline: boolean | undefined
 
                 for (const rawKey of rule.actions || []) {
                     const [code, flagStr] = String(rawKey).split("-")
@@ -284,10 +196,10 @@ export function migrateStoredRulesToArchiveRules(
                         primaryActions.push({
                             kind: flag ? "later" : "unlater",
                         })
-                    } else if (code === "n" && flag) {
-                        wantNotify = true
-                    } else if (code === "o" && flag) {
-                        wantOffline = true
+                    } else if (code === "n") {
+                        wantNotify = flag
+                    } else if (code === "o") {
+                        wantOffline = flag
                     }
                 }
 
@@ -329,8 +241,12 @@ export function migrateStoredRulesToArchiveRules(
                             ? {
                                   ...act,
                                   ...(highlight ? { highlight } : {}),
-                                  ...(wantNotify ? { notify: true } : {}),
-                                  ...(wantOffline ? { autoOffline: true } : {}),
+                                  ...(wantNotify !== undefined
+                                      ? { notify: wantNotify }
+                                      : {}),
+                                  ...(wantOffline !== undefined
+                                      ? { autoOffline: wantOffline }
+                                      : {}),
                               }
                             : act
                     )
@@ -339,28 +255,37 @@ export function migrateStoredRulesToArchiveRules(
                         {
                             kind: "highlight" as ArchiveActionKind,
                             highlight,
-                            ...(wantNotify ? { notify: true } : {}),
-                            ...(wantOffline ? { autoOffline: true } : {}),
+                            ...(wantNotify !== undefined
+                                ? { notify: wantNotify }
+                                : {}),
+                            ...(wantOffline !== undefined
+                                ? { autoOffline: wantOffline }
+                                : {}),
                         },
                     ]
-                } else if (wantNotify) {
+                } else if (wantNotify !== undefined) {
                     finalActions = [
                         {
                             kind: "notify" as ArchiveActionKind,
-                            notify: true,
-                            ...(wantOffline ? { autoOffline: true } : {}),
+                            notify: wantNotify,
+                            ...(wantOffline !== undefined
+                                ? { autoOffline: wantOffline }
+                                : {}),
                         },
                     ]
-                } else if (wantOffline) {
+                } else if (wantOffline !== undefined) {
                     finalActions = [
                         {
                             kind: "offline" as ArchiveActionKind,
-                            autoOffline: true,
+                            autoOffline: wantOffline,
                         },
                     ]
                 }
 
-                if (!finalActions.length) continue
+                if (!finalActions.length) {
+                    if (!migrationError) continue
+                    finalActions = [{ kind: "notify", notify: false }]
+                }
 
                 const summarySeed =
                     query.include ||
@@ -371,6 +296,8 @@ export function migrateStoredRulesToArchiveRules(
                     ? `${scopePrefix} · ${summarySeed}`
                     : String(summarySeed)
 
+                const migrationGroup =
+                    finalActions.length > 1 ? randomUUID() : undefined
                 for (let aIdx = 0; aIdx < finalActions.length; aIdx++) {
                     const suffix =
                         finalActions.length > 1 ? ` (${aIdx + 1})` : ""
@@ -381,13 +308,28 @@ export function migrateStoredRulesToArchiveRules(
                     out.push({
                         id: randomUUID(),
                         name,
-                        enabled: rule.enabled !== false,
+                        enabled: !migrationError && rule.enabled !== false,
+                        error: migrationError,
+                        migrationGroup,
                         query,
                         action: finalActions[aIdx],
                     })
                 }
             } catch (err) {
-                console.warn("Skipping malformed legacy rule:", err)
+                out.push({
+                    id: randomUUID(),
+                    name: `${scopePrefix || "全局"} · 损坏规则 ${idx + 1}`,
+                    enabled: false,
+                    query: {
+                        include: "",
+                        exclude: "",
+                        all: false,
+                        field: "title",
+                        ...scope,
+                    },
+                    action: { kind: "notify", notify: false },
+                    error: "旧规则无法安全迁移，请重新设置：" + String(err),
+                })
             }
         }
     }
@@ -400,21 +342,84 @@ export function runPersonalStartupMigrations(
     archive: ArticleArchive,
     prefStore: PersonalPreferencesStore
 ) {
+    // SQLite and electron-store cannot share a transaction. Keep a narrow undo
+    // snapshot until both post-commit settings writes have succeeded.
+    const tagRows = sqlite
+        .prepare("SELECT _id,tags,kept FROM items WHERE tags <> '[]'")
+        .all() as { _id: number; tags: string; kept: number }[]
+    const folderRows = sqlite
+        .prepare("SELECT id,legacyName FROM article_folders")
+        .all() as { id: number; legacyName: string | null }[]
+    const memberRows = sqlite
+        .prepare(
+            "SELECT folderId,itemId,stamp FROM folder_articles WHERE itemId IN (SELECT value FROM json_each(?))"
+        )
+        .all(JSON.stringify(tagRows.map(r => r._id))) as {
+        folderId: number
+        itemId: number
+        stamp: string
+    }[]
+    const previousReading = store.get("readingPreferences")
+    const previousTagsCleaned = store.get("tagsCleaned")
+    let committed = false
     try {
-        archive.syncLegacyTopics()
+        sqlite.transaction(() => {
+            archive.syncLegacyTopics()
+            if (!store.get("tagsCleaned"))
+                sqlite
+                    .prepare("UPDATE items SET tags='[]' WHERE tags <> '[]'")
+                    .run()
+        })()
+        committed = true
         prefStore.migrateLegacyFolderReadingPreferences()
+        if (!store.get("tagsCleaned")) store.set("tagsCleaned", true)
     } catch (err) {
-        console.warn("Legacy folder migration warning:", err)
-    }
-    try {
-        if (!store.get("tagsCleaned")) {
-            sqlite
-                .prepare("UPDATE items SET tags='[]' WHERE tags <> '[]'")
-                .run()
-            store.set("tagsCleaned", true)
+        if (committed) {
+            sqlite.transaction(() => {
+                sqlite
+                    .prepare(
+                        "DELETE FROM folder_articles WHERE itemId IN (SELECT value FROM json_each(?))"
+                    )
+                    .run(JSON.stringify(tagRows.map(r => r._id)))
+                sqlite
+                    .prepare(
+                        "DELETE FROM article_folders WHERE id NOT IN (SELECT value FROM json_each(?))"
+                    )
+                    .run(JSON.stringify(folderRows.map(r => r.id)))
+                for (const row of folderRows)
+                    sqlite
+                        .prepare(
+                            "UPDATE article_folders SET legacyName=? WHERE id=?"
+                        )
+                        .run(row.legacyName, row.id)
+                for (const row of memberRows)
+                    sqlite
+                        .prepare(
+                            "INSERT INTO folder_articles(folderId,itemId,stamp) VALUES(?,?,?)"
+                        )
+                        .run(row.folderId, row.itemId, row.stamp)
+                for (const row of tagRows)
+                    sqlite
+                        .prepare("UPDATE items SET tags=?,kept=? WHERE _id=?")
+                        .run(row.tags, row.kept, row._id)
+            })()
+            try {
+                if (previousReading === undefined)
+                    store.delete("readingPreferences")
+                else store.set("readingPreferences", previousReading)
+            } catch {
+                /* Retry at next startup. */
+            }
+            try {
+                if (previousTagsCleaned === undefined)
+                    store.delete("tagsCleaned")
+                else store.set("tagsCleaned", previousTagsCleaned)
+            } catch {
+                /* The original failed store write has not persisted a success flag. */
+            }
         }
-    } catch (err) {
-        console.warn("One-time tag cleanup warning:", err)
+        console.warn("Legacy folder migration warning (will retry):", err)
+        return
     }
     try {
         if (!store.get("sourceRulesMigrated")) {
@@ -543,7 +548,10 @@ export function initPersonal(
         action: ArchiveAction
     ) => {
         if (!targetIds.length) return
-        if (action.kind === "notify" || action.notify) {
+        if (
+            action.notify !== false &&
+            (action.kind === "notify" || action.notify)
+        ) {
             for (const id of targetIds.slice(0, 5)) {
                 try {
                     sendNotificationForItem(id)
@@ -552,7 +560,10 @@ export function initPersonal(
                 }
             }
         }
-        if (action.kind === "offline" || action.autoOffline) {
+        if (
+            action.autoOffline !== false &&
+            (action.kind === "offline" || action.autoOffline)
+        ) {
             for (const id of targetIds) {
                 void offline.save(id).catch(err => {
                     console.warn(
@@ -799,20 +810,23 @@ export function initPersonal(
             )
                 throw new Error("新文章列表数据无效，请刷新重试。")
             const ruleEffects = await archive.afterInsert(ids)
-            const notifySet = new Set(ruleEffects?.notifyIds || [])
             const offlineSet = new Set(ruleEffects?.offlineIds || [])
             let notifiedCount = 0
 
             const getItemStmt = sqlite.prepare(
-                "SELECT source,saveRequested FROM items WHERE _id=?"
+                "SELECT source,saveRequested,notify FROM items WHERE _id=?"
             )
-            for (const id of ids) {
+            for (const id of new Set(ids)) {
                 try {
                     const item = getItemStmt.get(id) as
-                        | { source: number; saveRequested: number }
+                        | {
+                              source: number
+                              saveRequested: number
+                              notify: number
+                          }
                         | undefined
                     if (!item) continue
-                    if (notifySet.has(id) && notifiedCount < 5) {
+                    if (item.notify && notifiedCount < 5) {
                         notifiedCount++
                         try {
                             sendNotificationForItem(id)

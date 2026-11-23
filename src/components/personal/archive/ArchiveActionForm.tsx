@@ -100,10 +100,10 @@ export const ArchiveActionForm: React.FC<{
     onHideChange: (hide: boolean) => void
     highlight: string
     onHighlightChange: (color: string) => void
-    notify: boolean
-    onNotifyChange: (notify: boolean) => void
-    autoOffline: boolean
-    onAutoOfflineChange: (autoOffline: boolean) => void
+    notify: boolean | undefined
+    onNotifyChange: (notify: boolean | undefined) => void
+    autoOffline: boolean | undefined
+    onAutoOfflineChange: (autoOffline: boolean | undefined) => void
     future: boolean
     onFutureChange: (future: boolean) => void
     ruleName: string
@@ -156,6 +156,33 @@ export const ArchiveActionForm: React.FC<{
                 ]}
                 onChange={(_, o) => o && onKindChange(String(o.key))}
             />
+            {(kind === "notify" || kind === "offline") && (
+                <Dropdown
+                    label={kind === "notify" ? "系统通知" : "自动离线"}
+                    disabled={busy}
+                    selectedKey={
+                        (kind === "notify" ? notify : autoOffline) === false
+                            ? "off"
+                            : "on"
+                    }
+                    options={[
+                        { key: "on", text: "启用" },
+                        {
+                            key: "off",
+                            text:
+                                kind === "notify"
+                                    ? "禁止系统通知"
+                                    : "禁止自动离线",
+                        },
+                    ]}
+                    onChange={(_, o) => {
+                        if (o)
+                            (kind === "notify"
+                                ? onNotifyChange
+                                : onAutoOfflineChange)(o.key === "on")
+                    }}
+                />
+            )}
             {kind === "folder" && (
                 <>
                     <FolderPicker
@@ -214,19 +241,55 @@ export const ArchiveActionForm: React.FC<{
                         </>
                     )}
                     {kind !== "notify" && (
-                        <Checkbox
-                            label="新文章到达时发送通知"
-                            checked={notify}
+                        <Dropdown
+                            label="新文章系统通知"
+                            selectedKey={
+                                notify === undefined
+                                    ? "keep"
+                                    : notify
+                                    ? "on"
+                                    : "off"
+                            }
+                            options={[
+                                { key: "keep", text: "不修改" },
+                                { key: "on", text: "发送系统通知" },
+                                { key: "off", text: "禁止系统通知" },
+                            ]}
                             disabled={busy}
-                            onChange={(_, v) => onNotifyChange(!!v)}
+                            onChange={(_, o) =>
+                                o &&
+                                onNotifyChange(
+                                    o.key === "keep"
+                                        ? undefined
+                                        : o.key === "on"
+                                )
+                            }
                         />
                     )}
                     {kind !== "offline" && (
-                        <Checkbox
-                            label="新文章自动保存离线网页"
-                            checked={autoOffline}
+                        <Dropdown
+                            label="新文章自动离线"
+                            selectedKey={
+                                autoOffline === undefined
+                                    ? "keep"
+                                    : autoOffline
+                                    ? "on"
+                                    : "off"
+                            }
+                            options={[
+                                { key: "keep", text: "不修改" },
+                                { key: "on", text: "自动保存离线网页" },
+                                { key: "off", text: "禁止自动离线" },
+                            ]}
                             disabled={busy}
-                            onChange={(_, v) => onAutoOfflineChange(!!v)}
+                            onChange={(_, o) =>
+                                o &&
+                                onAutoOfflineChange(
+                                    o.key === "keep"
+                                        ? undefined
+                                        : o.key === "on"
+                                )
+                            }
                         />
                     )}
                     <TextField

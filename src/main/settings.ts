@@ -28,6 +28,7 @@ import { applyPendingRestore } from "./restore"
 import { validateConditions } from "../rule-conditions"
 import { migrateStoredRules } from "../stored-rules"
 import { protectServiceConfig, readServiceConfig } from "./service-secrets"
+import { normalizeOpenFolders, normalizeUnseenDelta } from "../sidebar-state"
 
 try {
     applyPendingRestore(app.getPath("userData"))
@@ -42,6 +43,31 @@ try {
     )
 }
 export const store = new Store<SchemaTypes>({ cache: true })
+
+ipcMain.on("get-unseen-delta", event => {
+    try {
+        const value = store.get("unseenDelta")
+        event.returnValue =
+            value === undefined ? null : normalizeUnseenDelta(value)
+    } catch {
+        event.returnValue = normalizeUnseenDelta(undefined)
+    }
+})
+ipcMain.handle("set-unseen-delta", (_, value: unknown) => {
+    store.set("unseenDelta", normalizeUnseenDelta(value))
+})
+ipcMain.on("get-open-folders", event => {
+    try {
+        const value = store.get("openFolders")
+        event.returnValue =
+            value === undefined ? null : normalizeOpenFolders(value)
+    } catch {
+        event.returnValue = []
+    }
+})
+ipcMain.handle("set-open-folders", (_, value: unknown) => {
+    store.set("openFolders", normalizeOpenFolders(value))
+})
 
 ipcMain.on("get-reading-preferences", event => {
     event.returnValue = {

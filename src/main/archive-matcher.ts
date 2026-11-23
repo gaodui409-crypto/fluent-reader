@@ -7,11 +7,16 @@ import {
     ArchiveRow,
     archiveExcerpt,
     archiveMatches,
+    archiveNeedsBody,
+    archiveUsesRegex,
 } from "../archive-types"
+import { validateConditions } from "../rule-conditions"
 
 export function isArchiveQueryConstrained(query: ArchiveQuery): boolean {
     return Boolean(
         query.include?.trim() ||
+            query.conditions?.length ||
+            query.legacyFilter ||
             query.exclude?.trim() ||
             (query.regex !== undefined && query.regex !== "") ||
             (query.sids && query.sids.length > 0) ||
@@ -38,6 +43,26 @@ export function validateArchiveQuery(query: ArchiveQuery) {
         !["full", "title", "body", "author", "link"].includes(query.field)
     )
         throw new Error("筛选条件格式无效。")
+    if (query.conditions !== undefined) validateConditions(query.conditions)
+    if (query.logic !== undefined && !["all", "any"].includes(query.logic))
+        throw new Error("复合条件的匹配方式无效。")
+    if (query.negate !== undefined && typeof query.negate !== "boolean")
+        throw new Error("复合条件的取反设置无效。")
+    if (query.legacyFilter !== undefined) {
+        const f = query.legacyFilter
+        if (
+            !f ||
+            !Number.isSafeInteger(f.type) ||
+            f.type < 0 ||
+            f.type > 1023 ||
+            typeof f.search !== "string" ||
+            f.search.length > 5000 ||
+            typeof f.match !== "boolean"
+        )
+            throw new Error("旧版筛选条件无效。")
+        if (!(f.type & (1 << 6)))
+            new RegExp(f.search, f.type & (1 << 4) ? "i" : "")
+    }
     if (query.regex !== undefined) {
         if (typeof query.regex !== "string" || query.regex.length > 2000)
             throw new Error("正则表达式长度不能超过 2000 个字符。")
@@ -132,13 +157,16 @@ export function queryArchiveRows(
     }
 
     const ftsAvailable = hasFtsTable(db)
-    const needsBody = query.field === "full" || query.field === "body"
+    const needsBody = archiveNeedsBody(query)
 
     // Pre-filter via trigram FTS5 when doing plain keyword search with >=3-codepoint terms
     // and all rows have been indexed into article_fts.
     if (
         ftsAvailable &&
         !ids &&
+        !query.conditions &&
+        !query.legacyFilter &&
+        !query.negate &&
         query.regex === undefined &&
         ["full", "title", "body"].includes(query.field)
     ) {
@@ -172,7 +200,7 @@ export function queryArchiveRows(
         ? "WHERE " + conditions.join(" AND ")
         : ""
     const metaColumns =
-        "i.hasRead,i.starred,EXISTS(SELECT 1 FROM folder_articles fa WHERE fa.itemId=i._id) AS inFolder"
+        "i.source AS sourceId,i.snippet,i.hidden,i.feedHidden,i.hasRead,i.starred,EXISTS(SELECT 1 FROM folder_articles fa WHERE fa.itemId=i._id) AS inFolder"
 
     if (!needsBody) {
         return db
@@ -259,7 +287,7 @@ export class ArchiveMatcher {
     ): Promise<ArchiveRow[]> {
         validateArchiveQuery(query)
         if (!rows.length) return []
-        if (query.regex === undefined) {
+        if (!archiveUsesRegex(query)) {
             return rows
                 .filter(row => archiveMatches(query, row))
                 .map(row =>

@@ -135,7 +135,11 @@ export type StoredAIProfile = {
     encryptedKey: string
 }
 
+export type UnseenDelta = { bySource: Record<number, number>; all: number }
+
 export type SchemaTypes = {
+    unseenDelta?: UnseenDelta
+    openFolders?: string[]
     linuxDoRanking?: import("./linuxdo").RankingState
     readingPreferences: import("./reading-preferences").ReadingPreferences
     ai: import("./personal-types").AIConfig & {

@@ -8,10 +8,19 @@ import {
     StoredRule,
     StoredRules,
     RuleTarget,
+    UnseenDelta,
 } from "../schema-types"
 import { ipcRenderer } from "electron"
 
 const settingsBridge = {
+    getUnseenDelta: (): UnseenDelta | null =>
+        ipcRenderer.sendSync("get-unseen-delta"),
+    setUnseenDelta: (value: UnseenDelta): Promise<void> =>
+        ipcRenderer.invoke("set-unseen-delta", value),
+    getOpenFolders: (): string[] | null =>
+        ipcRenderer.sendSync("get-open-folders"),
+    setOpenFolders: (value: string[]): Promise<void> =>
+        ipcRenderer.invoke("set-open-folders", value),
     getReadingPreferences:
         (): import("../reading-preferences").ReadingPreferences =>
             ipcRenderer.sendSync("get-reading-preferences"),

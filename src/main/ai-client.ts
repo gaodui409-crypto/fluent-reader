@@ -46,6 +46,18 @@ export const tokenNumber = (value: unknown): number | null =>
 export const sumTokens = (values: (number | null)[]) =>
     values.some(v => v === null) ? null : values.reduce((a, b) => a + b, 0)
 
+function validateFinishReason(reason: unknown) {
+    if (reason === undefined || reason === null || reason === "") return
+    if (reason === "length")
+        throw new Error(
+            "AI 输出因长度上限被截断，请调高服务商输出上限或更换模型。"
+        )
+    if (!["stop", "end_turn", "eos", "completed"].includes(String(reason)))
+        throw new Error(
+            `AI 响应异常结束（${String(reason)}），未保存不完整内容，请重试。`
+        )
+}
+
 export function stripCodeFenceJSON(text: string): unknown {
     const cleaned = text
         .trim()
@@ -736,6 +748,7 @@ export class AIClient {
                 let inputTokens: number | null = null
                 let outputTokens: number | null = null
                 let sawSSEData = false
+                let sawDone = false
 
                 const processLine = (line: string) => {
                     const trimmed = line.trim()
@@ -743,12 +756,18 @@ export class AIClient {
                     if (!trimmed.startsWith("data:")) return
                     sawSSEData = true
                     const payload = trimmed.slice(5).trim()
-                    if (!payload || payload === "[DONE]") return
+                    if (payload === "[DONE]") {
+                        sawDone = true
+                        return
+                    }
+                    if (!payload) return
                     let eventJson: any
                     try {
                         eventJson = JSON.parse(payload)
                     } catch {
-                        return
+                        throw new Error(
+                            "AI 流式响应格式异常，未保存不完整内容，请重试。"
+                        )
                     }
                     if (eventJson?.error) {
                         const errMsg =
@@ -775,6 +794,7 @@ export class AIClient {
                     }
                     if (choice?.finish_reason) {
                         finishReason = choice.finish_reason
+                        validateFinishReason(finishReason)
                     }
                 }
 
@@ -808,11 +828,10 @@ export class AIClient {
                             "AI 未返回有效内容，请确认所填模型名支持对话接口（而非向量或生图模型）。"
                         )
                     }
-                    if (finishReason === "length") {
+                    if (!sawDone && !finishReason)
                         throw new Error(
-                            "AI 输出因长度上限被截断，请调高服务商输出上限或更换模型。"
+                            "AI 流式响应在收到完成标记前中断，未保存不完整内容，请重试。"
                         )
-                    }
                     return {
                         text: assembled.trim(),
                         tokens: sumTokens([inputTokens, outputTokens]),
@@ -878,10 +897,7 @@ export class AIClient {
             throw new Error(
                 "AI 未返回有效内容，请确认所填模型名支持对话接口（而非向量或生图模型）。"
             )
-        if (result.choices[0].finish_reason === "length")
-            throw new Error(
-                "AI 输出因长度上限被截断，请调高服务商输出上限或更换模型。"
-            )
+        validateFinishReason(result.choices[0].finish_reason)
         const trimmed = text.trim()
         onProgress?.(trimmed)
         return {

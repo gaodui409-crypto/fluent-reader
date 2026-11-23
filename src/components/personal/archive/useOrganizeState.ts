@@ -33,6 +33,8 @@ export function openOrganize(value?: unknown) {
 function isUnconstrainedAllQuery(q: ArchiveQuery): boolean {
     return (
         !q.include.trim() &&
+        !q.conditions &&
+        !q.legacyFilter &&
         !q.exclude.trim() &&
         q.regex === undefined &&
         q.start === undefined &&
@@ -58,8 +60,8 @@ export function useOrganizeState() {
     const [folderId, setFolderId] = useState<number>()
     const [hide, setHide] = useState(false)
     const [highlight, setHighlight] = useState("")
-    const [notify, setNotify] = useState(false)
-    const [autoOffline, setAutoOffline] = useState(false)
+    const [notify, setNotify] = useState<boolean | undefined>()
+    const [autoOffline, setAutoOffline] = useState<boolean | undefined>()
     const [future, setFuture] = useState(false)
     const [advanced, setAdvanced] = useState(false)
     const [preview, setPreview] = useState<ArchivePreview>()
@@ -87,13 +89,12 @@ export function useOrganizeState() {
                         (rule.action.kind === "highlight" ? "#e3a008" : "")
                 )
                 setNotify(
-                    Boolean(rule.action.notify || rule.action.kind === "notify")
+                    rule.action.notify ??
+                        (rule.action.kind === "notify" ? true : undefined)
                 )
                 setAutoOffline(
-                    Boolean(
-                        rule.action.autoOffline ||
-                            rule.action.kind === "offline"
-                    )
+                    rule.action.autoOffline ??
+                        (rule.action.kind === "offline" ? true : undefined)
                 )
                 setRuleId(rule.id)
                 setRuleName(rule.name)
@@ -134,8 +135,8 @@ export function useOrganizeState() {
                 setFolderId(undefined)
                 setHide(false)
                 setHighlight("")
-                setNotify(false)
-                setAutoOffline(false)
+                setNotify(undefined)
+                setAutoOffline(undefined)
                 setRuleId("")
                 setRuleName("")
                 setFuture(false)
@@ -153,6 +154,8 @@ export function useOrganizeState() {
 
     const handleKindChange = (nextKind: string) => {
         setKind(nextKind)
+        if (nextKind === "notify") setNotify(true)
+        if (nextKind === "offline") setAutoOffline(true)
         if (nextKind === "highlight" && !highlight) {
             setHighlight("#e3a008")
         }
@@ -230,12 +233,16 @@ export function useOrganizeState() {
             feedHidden: kind === "folder" ? hide : undefined,
             highlight: resolvedHighlight,
             notify:
-                kind === "notify" ? true : future && notify ? true : undefined,
+                kind === "notify"
+                    ? notify ?? true
+                    : future
+                    ? notify
+                    : undefined,
             autoOffline:
                 kind === "offline"
-                    ? true
-                    : future && autoOffline
-                    ? true
+                    ? autoOffline ?? true
+                    : future
+                    ? autoOffline
                     : undefined,
         }
     }

@@ -8,7 +8,11 @@ import {
     PrimaryButton,
 } from "@fluentui/react"
 import { makeStyles } from "@griffel/react"
-import { ArchiveRule, ArticleFolder } from "../../../archive-types"
+import {
+    ArchiveRule,
+    ArticleFolder,
+    summarizeArchiveConditions,
+} from "../../../archive-types"
 import { useAppSelector } from "../../../scripts/reducer"
 import { RSSSource } from "../../../scripts/models/source"
 import { SourceGroup } from "../../../schema-types"
@@ -108,7 +112,9 @@ function summarizeRule(
 
     const fieldText = FIELD_NAMES[q.field] || "正文"
     const conds: string[] = []
-    if (q.regex !== undefined) {
+    if (q.conditions || q.legacyFilter) {
+        conds.push(summarizeArchiveConditions(q))
+    } else if (q.regex !== undefined) {
         conds.push(`${fieldText}匹配正则 /${q.regex}/`)
     } else if (q.include.trim()) {
         conds.push(
@@ -136,16 +142,22 @@ function summarizeRule(
             `归入「${fName}」${act.feedHidden ? "（隐藏订阅流）" : ""}`
         )
     } else {
-        actionParts.push(ACTION_NAMES[act.kind] || act.kind)
+        actionParts.push(
+            act.kind === "notify" && act.notify === false
+                ? "禁止系统通知"
+                : act.kind === "offline" && act.autoOffline === false
+                ? "禁止自动离线"
+                : ACTION_NAMES[act.kind] || act.kind
+        )
     }
     if (act.highlight && act.kind !== "highlight") {
         actionParts.push("高亮颜色")
     }
-    if (act.notify && act.kind !== "notify") {
-        actionParts.push("发送通知")
+    if (act.notify !== undefined && act.kind !== "notify") {
+        actionParts.push(act.notify ? "发送通知" : "禁止系统通知")
     }
-    if (act.autoOffline && act.kind !== "offline") {
-        actionParts.push("自动离线保存")
+    if (act.autoOffline !== undefined && act.kind !== "offline") {
+        actionParts.push(act.autoOffline ? "自动离线保存" : "禁止自动离线")
     }
 
     return `[${scopeLabel}] ${condLabel} → ${actionParts.join(" ＋ ")}`

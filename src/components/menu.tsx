@@ -1,3 +1,4 @@
+import { loadOpenFolders, saveOpenFolders } from "../scripts/sidebar-state"
 import * as React from "react"
 import { useMemo, useCallback, useEffect, useRef, useState } from "react"
 import intl from "react-intl-universal"
@@ -30,21 +31,6 @@ import { useMenuCollections } from "./menu/useMenuCollections"
 import { MenuCollectionsSection } from "./menu/MenuCollectionsSection"
 import { MenuFoldersAndTagsSection } from "./menu/MenuFoldersAndTagsSection"
 import { MenuSubscriptionsSection } from "./menu/MenuSubscriptionsSection"
-
-const OPEN_FOLDERS_KEY = "personal:openFolders"
-
-function loadOpenFolders(): Set<string> {
-    try {
-        const raw = localStorage.getItem(OPEN_FOLDERS_KEY)
-        if (!raw) return new Set()
-        const arr = JSON.parse(raw)
-        return Array.isArray(arr)
-            ? new Set(arr.filter(v => typeof v === "string"))
-            : new Set()
-    } catch {
-        return new Set()
-    }
-}
 
 const useMenuClasses = makeStyles({
     menuBtn: {
@@ -217,14 +203,7 @@ export const Menu: React.FC = () => {
                         const next = new Set(old)
                         if (next.has(value)) next.delete(value)
                         else next.add(value)
-                        try {
-                            localStorage.setItem(
-                                OPEN_FOLDERS_KEY,
-                                JSON.stringify([...next])
-                            )
-                        } catch {
-                            // Ignore quota errors.
-                        }
+                        saveOpenFolders(next)
                         return next
                     })
             }

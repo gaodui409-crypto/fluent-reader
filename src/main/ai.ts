@@ -200,68 +200,36 @@ export function batchProseBlocks(
     return batches
 }
 
+class IncompleteTranslation extends Error {
+    constructor(readonly partial: string[]) {
+        super("AI 翻译段落缺失或对应关系异常，需要逐段补译。")
+    }
+}
+
 export function parseBatchTranslation(output: string, count: number): string[] {
     if (count <= 0) return []
-    const trimmed = String(output || "").trim()
-    if (count === 1) {
-        return [
-            trimmed.replace(/^\s*\[{2,3}\s*PARA_0\s*\]{2,3}\s*/i, "").trim(),
-        ]
+    const text = String(output || "").trim()
+    const markers = [...text.matchAll(/\[{2,3}\s*PARA_(\d+)\s*\]{2,3}/gi)]
+    if (count === 1 && !markers.length && text) return [text]
+    const partial: string[] = Array(count).fill("")
+    // Recover only unambiguous, ordered markers. Never guess paragraph positions.
+    let previous = -1
+    for (let i = 0; i < markers.length; i++) {
+        const marker = markers[i]
+        const index = Number(marker[1])
+        if (index <= previous || index >= count)
+            throw new IncompleteTranslation(Array(count).fill(""))
+        previous = index
+        partial[index] = text
+            .slice(
+                marker.index + marker[0].length,
+                markers[i + 1]?.index ?? text.length
+            )
+            .trim()
     }
-
-    const markerRegex = /\[{2,3}\s*PARA_(\d+)\s*\]{2,3}/gi
-    const matches: { idx: number; start: number; contentStart: number }[] = []
-    let m: RegExpExecArray | null
-    while ((m = markerRegex.exec(trimmed)) !== null) {
-        matches.push({
-            idx: Number(m[1]),
-            start: m.index,
-            contentStart: m.index + m[0].length,
-        })
-    }
-
-    if (matches.length >= count) {
-        const byIdx = new Map<number, string>()
-        for (let i = 0; i < matches.length; i++) {
-            const end =
-                i + 1 < matches.length ? matches[i + 1].start : trimmed.length
-            const segment = trimmed.slice(matches[i].contentStart, end).trim()
-            if (!byIdx.has(matches[i].idx)) {
-                byIdx.set(matches[i].idx, segment)
-            }
-        }
-        const allPresent = Array.from({ length: count }, (_, i) => i).every(
-            i => byIdx.has(i) && Boolean(byIdx.get(i))
-        )
-        if (allPresent) {
-            return Array.from({ length: count }, (_, i) => byIdx.get(i) || "")
-        }
-    }
-
-    const stripped = trimmed
-        .replace(/\[{2,3}\s*PARA_\d+\s*\]{2,3}/gi, "\n\n")
-        .trim()
-    let parts = stripped
-        .split(/\n\s*\n/)
-        .map(s => s.trim())
-        .filter(Boolean)
-    if (parts.length !== count) {
-        const singleLineParts = stripped
-            .split(/\n/)
-            .map(s => s.trim())
-            .filter(Boolean)
-        if (singleLineParts.length === count) {
-            parts = singleLineParts
-        }
-    }
-    if (parts.length === count) return parts
-    if (parts.length > count) {
-        return [
-            ...parts.slice(0, count - 1),
-            parts.slice(count - 1).join("\n\n"),
-        ]
-    }
-    return Array.from({ length: count }, (_, i) => parts[i] ?? "")
+    if (markers.length !== count || partial.some(t => !t))
+        throw new IncompleteTranslation(partial)
+    return partial
 }
 
 function cleanStreamingMarkers(partial: string): string {
@@ -277,6 +245,31 @@ interface CachedTranslationEnvelope {
     text: string
     original: string
     blocks: BilingualBlock[]
+}
+
+function validTranslationEnvelope(
+    value: CachedTranslationEnvelope,
+    raw: RawArticleBlock[]
+): boolean {
+    return (
+        value?.v === 2 &&
+        typeof value.text === "string" &&
+        typeof value.original === "string" &&
+        Array.isArray(value.blocks) &&
+        value.blocks.length === raw.length &&
+        value.blocks.every(
+            (block, i) =>
+                block &&
+                block.source === raw[i].text &&
+                Boolean(block.isCode) === Boolean(raw[i].isCode) &&
+                typeof block.target === "string" &&
+                (block.isCode
+                    ? block.target === block.source
+                    : Boolean(block.target.trim()))
+        ) &&
+        value.text === value.blocks.map(b => b.target).join("\n\n") &&
+        value.original === raw.map(b => b.text).join("\n\n")
+    )
 }
 
 const titlePrompt = (language: string) =>
@@ -497,18 +490,16 @@ export class AI {
                     const parsed = JSON.parse(
                         cachedBlocksRaw
                     ) as CachedTranslationEnvelope
-                    if (
-                        typeof parsed?.text === "string" &&
-                        Array.isArray(parsed?.blocks)
-                    ) {
+                    if (validTranslationEnvelope(parsed, rawBlocks)) {
                         state.translation = parsed.text
                         state.original = parsed.original
                         state.blocks = parsed.blocks
                         return state
                     }
                 } catch {
-                    // Fall back to legacy cache check below.
+                    // Invalid historical envelopes are recomputed.
                 }
+                return state
             }
         }
 
@@ -523,7 +514,7 @@ export class AI {
                 )
             )
         )
-        if (translatedParts.every(Boolean)) {
+        if (translatedParts.every(part => part?.trim())) {
             state.translation = translatedParts.join("\n\n")
             state.original = article.text
         }
@@ -828,10 +819,7 @@ export class AI {
                     const parsed = JSON.parse(
                         cachedEntry.result
                     ) as CachedTranslationEnvelope
-                    if (
-                        typeof parsed?.text === "string" &&
-                        Array.isArray(parsed?.blocks)
-                    ) {
+                    if (validTranslationEnvelope(parsed, rawBlocks)) {
                         emitStream(parsed.text, 0, 1, true)
                         return {
                             text: parsed.text,
@@ -880,38 +868,81 @@ export class AI {
                 .filter(Boolean)
                 .join("\n\n")
 
-            const batchResult = await this.client.cached(
-                c,
-                id,
-                "translation-part",
-                instruction,
-                batchInput,
-                undefined,
-                force,
-                reqId
-                    ? {
-                          stream: true,
-                          requestId: reqId,
-                          signal,
-                          onProgress: partial => {
-                              const cleaned = cleanStreamingMarkers(partial)
-                              const combined = completedBefore
-                                  ? `${completedBefore}\n\n${cleaned}`
-                                  : cleaned
-                              emitStream(combined, bIdx, batches.length, false)
-                          },
-                      }
-                    : undefined
-            )
-            tokenParts.push(batchResult.tokens)
-            allCached = allCached && batchResult.cached
-
-            const translatedList = parseBatchTranslation(
-                batchResult.text,
-                batch.length
-            )
+            let translatedList: string[]
+            try {
+                const batchResult = await this.client.cached(
+                    c,
+                    id,
+                    "translation-part",
+                    instruction,
+                    batchInput,
+                    text => {
+                        parseBatchTranslation(text, batch.length)
+                    },
+                    force,
+                    {
+                        stream: Boolean(reqId),
+                        requestId: reqId || undefined,
+                        signal,
+                        onProgress: partial => {
+                            const cleaned = cleanStreamingMarkers(partial)
+                            emitStream(
+                                completedBefore
+                                    ? completedBefore + "\n\n" + cleaned
+                                    : cleaned,
+                                bIdx,
+                                batches.length,
+                                false
+                            )
+                        },
+                    }
+                )
+                tokenParts.push(batchResult.tokens)
+                allCached = allCached && batchResult.cached
+                translatedList = parseBatchTranslation(
+                    batchResult.text,
+                    batch.length
+                )
+            } catch (error) {
+                if (
+                    !(error instanceof IncompleteTranslation) ||
+                    isSingle ||
+                    signal?.aborted
+                )
+                    throw error
+                // The failed batch is absent from ai_cache. Its usage is still in ai_usage.
+                tokenParts.push(null)
+                allCached = false
+                translatedList = error.partial
+                for (let i = 0; i < batch.length; i++) {
+                    if (translatedList[i]?.trim()) continue
+                    const repaired = await this.client.cached(
+                        c,
+                        id,
+                        "translation-part",
+                        translationPrompt(language),
+                        batch[i].text,
+                        text => {
+                            parseBatchTranslation(text, 1)
+                        },
+                        force,
+                        {
+                            stream: Boolean(reqId),
+                            requestId: reqId || undefined,
+                            signal,
+                        }
+                    )
+                    translatedList[i] = parseBatchTranslation(
+                        repaired.text,
+                        1
+                    )[0]
+                    tokenParts.push(repaired.tokens)
+                }
+            }
             for (let i = 0; i < batch.length; i++) {
-                blocks[batch[i].index].target = translatedList[i] ?? ""
+                if (!translatedList[i]?.trim())
+                    throw new Error("AI 翻译仍有空白段落，未保存不完整译文。")
+                blocks[batch[i].index].target = translatedList[i]
             }
         }
 
@@ -929,6 +960,9 @@ export class AI {
             original,
             blocks,
         }
+        if (!validTranslationEnvelope(envelope, rawBlocks))
+            throw new Error("AI 翻译仍有空白段落，未保存不完整译文。")
+        this.client.clearError()
         this.client.saveCachedValue(
             blocksCacheKey,
             id,
