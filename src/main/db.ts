@@ -15,7 +15,7 @@ import { transformLovefieldRules } from "./utils"
 import { getValidDate } from "../scripts/date"
 import { htmlText } from "./web-content"
 import { initPersonal } from "./personal"
-import { protectServiceConfig } from "./service-secrets"
+import { protectServiceConfig, readServiceConfig } from "./service-secrets"
 import {
     clearLibraryData,
     exportLibraryData,
@@ -27,6 +27,13 @@ import type {
     DatabaseResult,
     RestoreDialogTexts,
 } from "../bridges/db"
+import { assertTrustedMainFrame } from "./ipc-guard"
+import {
+    ensureRuntimeSchemaIndexes,
+    registerSafeRegexFunctions,
+} from "./sqlite-runtime"
+
+export { ensureRuntimeSchemaIndexes }
 
 let sqlite: Database.Database
 let db: ReturnType<typeof drizzle>
@@ -35,60 +42,15 @@ let managerRef: WindowManager
 let restartFn: () => void
 let resetPersonalRef: (() => void) | null = null
 
+const FORBIDDEN_SQL_PATTERN = /^\s*(?:attach|detach)\b/i
+
 function optimizeDB() {
+    if (!sqlite || !sqlite.open) return
     try {
         sqlite.pragma("optimize")
     } catch (err) {
         // Statistics maintenance must not turn a committed write into a failure.
         console.warn("SQLite optimize error:", err)
-    }
-}
-
-export function ensureRuntimeSchemaIndexes(conn: Database.Database) {
-    conn.exec(`
-        CREATE INDEX IF NOT EXISTS ai_cache_item ON ai_cache(itemId);
-        CREATE INDEX IF NOT EXISTS ai_cache_kind_item ON ai_cache(kind, itemId);
-        CREATE INDEX IF NOT EXISTS ai_usage_created ON ai_usage(createdAt);
-        CREATE INDEX IF NOT EXISTS article_folders_parent ON article_folders(parentId);
-        CREATE INDEX IF NOT EXISTS items_later_date ON items(readLater, date DESC, _id DESC) WHERE readLater = 1;
-    `)
-    if (
-        conn
-            .prepare(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_fts'"
-            )
-            .get()
-    ) {
-        conn.exec(`
-            DROP TRIGGER IF EXISTS items_fts_delete;
-            CREATE TRIGGER items_fts_delete AFTER DELETE ON items BEGIN
-                DELETE FROM article_fts WHERE rowid=old._id;
-            END;
-            DROP TRIGGER IF EXISTS content_fts_update;
-            CREATE TRIGGER content_fts_update AFTER UPDATE OF fullText,offlineText ON article_content BEGIN
-                UPDATE article_fts SET fullText=new.fullText, offlineText=new.offlineText WHERE rowid=new.itemId;
-                INSERT INTO article_fts(rowid,title,body,fullText,offlineText,notes)
-                SELECT i._id,i.title,html_text(i.content),coalesce(c.fullText,''),coalesce(c.offlineText,''),coalesce(n.text,'')
-                FROM items i LEFT JOIN article_content c ON c.itemId=i._id LEFT JOIN article_notes n ON n.itemId=i._id
-                WHERE i._id=new.itemId AND NOT EXISTS(SELECT 1 FROM article_fts WHERE rowid=new.itemId);
-            END;
-            DROP TRIGGER IF EXISTS content_fts_delete;
-            CREATE TRIGGER content_fts_delete AFTER DELETE ON article_content BEGIN
-                UPDATE article_fts SET fullText='', offlineText='' WHERE rowid=old.itemId AND EXISTS(SELECT 1 FROM items WHERE _id=old.itemId);
-            END;
-            DROP TRIGGER IF EXISTS notes_fts_update;
-            CREATE TRIGGER notes_fts_update AFTER UPDATE OF text ON article_notes BEGIN
-                UPDATE article_fts SET notes=new.text WHERE rowid=new.itemId;
-                INSERT INTO article_fts(rowid,title,body,fullText,offlineText,notes)
-                SELECT i._id,i.title,html_text(i.content),coalesce(c.fullText,''),coalesce(c.offlineText,''),coalesce(n.text,'')
-                FROM items i LEFT JOIN article_content c ON c.itemId=i._id LEFT JOIN article_notes n ON n.itemId=i._id
-                WHERE i._id=new.itemId AND NOT EXISTS(SELECT 1 FROM article_fts WHERE rowid=new.itemId);
-            END;
-            DROP TRIGGER IF EXISTS notes_fts_delete;
-            CREATE TRIGGER notes_fts_delete AFTER DELETE ON article_notes BEGIN
-                UPDATE article_fts SET notes='' WHERE rowid=old.itemId AND EXISTS(SELECT 1 FROM items WHERE _id=old.itemId);
-            END;
-        `)
     }
 }
 
@@ -98,8 +60,9 @@ async function handleExportAll() {
         defaultPath: "Fluent_Reader_Backup.frdata",
         filters: [{ name: "Fluent Reader Data", extensions: ["frdata"] }],
     })
-    if (result.canceled) return
+    if (result.canceled || !result.filePath) return
     try {
+        readServiceConfig(storeRef)
         const sources = db.select().from(sourcesTable).all()
         const items = db.select().from(itemsTable).all()
         const output = {
@@ -203,6 +166,7 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
         }
     }
 
+    const previousStoreSnapshot = { ...storeRef.store }
     try {
         if (configs.sqlite) {
             const sqliteData = configs.sqlite as {
@@ -227,6 +191,24 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
             return true
         }
 
+        const excludedKeys = new Set([
+            "lovefield",
+            "sqlite",
+            "nedb",
+            "useNeDB",
+            "__internal__",
+            "prototype",
+            "__proto__",
+            "constructor",
+        ])
+        const nextStoreData: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(configs)) {
+            if (excludedKeys.has(key) || value === undefined) continue
+            nextStoreData[key] = value
+        }
+        nextStoreData.dbVersion = "sqlite"
+        nextStoreData.sourceRules = storedRules
+
         db.transaction(tx => {
             clearLibraryData(sqlite)
             tx.delete(itemsTable).run()
@@ -247,21 +229,34 @@ async function handleImportAll(texts: RestoreDialogTexts): Promise<boolean> {
             )
         })
         optimizeDB()
+
+        try {
+            storeRef.store = nextStoreData as unknown as SchemaTypes
+        } catch {
+            try {
+                storeRef.store = previousStoreSnapshot
+            } catch {
+                // Ignore snapshot restore failure and write sanitized keys individually.
+            }
+            storeRef.clear()
+            for (const [key, value] of Object.entries(nextStoreData)) {
+                if (key.includes(".")) continue
+                try {
+                    storeRef.set(
+                        key as keyof SchemaTypes,
+                        value as SchemaTypes[keyof SchemaTypes]
+                    )
+                } catch {
+                    // Skip unrecognized corrupt keys from external JSON imports.
+                }
+            }
+            storeRef.set("dbVersion" as keyof SchemaTypes, "sqlite")
+            storeRef.set("sourceRules", storedRules)
+        }
     } catch (err) {
         dialog.showErrorBox("导入失败", String(err))
         return true
     }
-
-    storeRef.clear()
-    for (const [key, value] of Object.entries(configs)) {
-        if (["lovefield", "sqlite", "nedb", "useNeDB"].includes(key)) continue
-        storeRef.set(
-            key as keyof SchemaTypes,
-            value as SchemaTypes[keyof SchemaTypes]
-        )
-    }
-    storeRef.set("dbVersion" as keyof SchemaTypes, "sqlite")
-    storeRef.set("sourceRules", storedRules)
 
     performUpdate(storeRef)
     nativeTheme.themeSource = storeRef.get("theme", ThemeSettings.Default)
@@ -283,6 +278,7 @@ export function initDB(
     const dbPath = path.join(path.dirname(store.path), "fluent-reader.db")
 
     sqlite = new Database(dbPath)
+    sqlite.pragma("trusted_schema = OFF")
     sqlite.pragma("foreign_keys = ON")
     try {
         sqlite.pragma("journal_mode = WAL")
@@ -310,30 +306,7 @@ export function initDB(
         }
     }
     sqlite.function("html_text", { deterministic: true }, htmlText)
-
-    // Register custom regex functions for SQLite queries
-    sqlite.function(
-        "regexp",
-        { deterministic: true },
-        (pattern: string, value: string) => {
-            try {
-                return Number(new RegExp(pattern).test(value ?? ""))
-            } catch {
-                return 0
-            }
-        }
-    )
-    sqlite.function(
-        "regexpi",
-        { deterministic: true },
-        (pattern: string, value: string) => {
-            try {
-                return Number(new RegExp(pattern, "i").test(value ?? ""))
-            } catch {
-                return 0
-            }
-        }
-    )
+    registerSafeRegexFunctions(sqlite)
 
     db = drizzle(sqlite, { schema })
 
@@ -348,6 +321,9 @@ export function initDB(
         params,
         method,
     }: DatabaseQuery): DatabaseResult => {
+        if (typeof sql !== "string" || FORBIDDEN_SQL_PATTERN.test(sql)) {
+            throw new Error("Disallowed SQL statement.")
+        }
         const stmt = sqlite.prepare(sql)
         if (method === "run") {
             const result = stmt.run(params)
@@ -367,11 +343,12 @@ export function initDB(
     ipcMain.handle(
         "db:execute",
         (
-            _,
+            event,
             sql: string,
             params: unknown[],
             method: "run" | "all" | "values" | "get"
         ) => {
+            assertTrustedMainFrame(event, manager)
             try {
                 return executeQuery({ sql, params, method })
             } catch (err) {
@@ -385,7 +362,9 @@ export function initDB(
     const executeBatch = sqlite.transaction((queries: DatabaseQuery[]) =>
         queries.map(executeQuery)
     )
-    ipcMain.handle("db:batch", (_, queries: DatabaseQuery[]) => {
+    ipcMain.handle("db:batch", (event, queries: DatabaseQuery[]) => {
+        assertTrustedMainFrame(event, manager)
+        if (!Array.isArray(queries)) throw new Error("Invalid SQL batch.")
         try {
             const results = executeBatch(queries)
             optimizeDB()
@@ -396,10 +375,14 @@ export function initDB(
         }
     })
 
-    ipcMain.handle("db-export-all", handleExportAll)
-    ipcMain.handle("db-import-all", (_, texts: RestoreDialogTexts) =>
-        handleImportAll(texts)
-    )
+    ipcMain.handle("db-export-all", event => {
+        assertTrustedMainFrame(event, manager)
+        return handleExportAll()
+    })
+    ipcMain.handle("db-import-all", (event, texts: RestoreDialogTexts) => {
+        assertTrustedMainFrame(event, manager)
+        return handleImportAll(texts)
+    })
 
     try {
         const personalRuntime = initPersonal(sqlite, store, manager)
@@ -428,5 +411,10 @@ export function initDB(
     app.once("will-quit", () => {
         clearInterval(optimizeTimer)
         optimizeDB()
+        try {
+            if (sqlite && sqlite.open) sqlite.close()
+        } catch {
+            // Ignore close failure during process exit.
+        }
     })
 }

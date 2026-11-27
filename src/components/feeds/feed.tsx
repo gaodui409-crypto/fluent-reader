@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useCallback } from "react"
+import { useCallback, useMemo } from "react"
 import { RSSItem, markRead, itemShortcuts } from "../../scripts/models/item"
 import { openItemMenu } from "../../scripts/models/app"
 import { RSSFeed, FeedFilter, loadMore } from "../../scripts/models/feed"
@@ -30,53 +30,49 @@ interface FeedOwnProps {
     viewType: ViewType
 }
 
+const EMPTY_ITEMS: RSSItem[] = []
+
 export const Feed: React.FC<FeedOwnProps> = ({ feedId, viewType }) => {
     const dispatch = useAppDispatch()
 
     const feed = useAppSelector(s => s.feeds[feedId])
-    const items = useAppSelector(s =>
-        s.feeds[feedId]
-            ? s.feeds[feedId].iids
-                  .map(iid => {
-                      const item = s.items[iid]
-                      if (!item) return item
-                      const thumb = articleCover(
-                          item,
-                          s.sources[item.source]?.url
-                      )
-                      return thumb === item.thumb ? item : { ...item, thumb }
-                  })
-                  .filter(
-                      item =>
-                          item &&
-                          FeedFilter.testItem(s.feeds[feedId].filter, item)
-                  )
-            : []
-    )
+    const itemsMap = useAppSelector(s => s.items)
     const sourceMap = useAppSelector(s => s.sources)
     const filter = useAppSelector(s => s.page.filter)
     const viewConfigs = useAppSelector(s => s.page.viewConfigs)
     const currentItem = useAppSelector(s => s.page.itemId)
 
+    const items = useMemo(() => {
+        if (!feed) return EMPTY_ITEMS
+        return feed.iids
+            .map(iid => {
+                const item = itemsMap[iid]
+                if (!item) return item
+                const thumb = articleCover(item, sourceMap[item.source]?.url)
+                return thumb === item.thumb ? item : { ...item, thumb }
+            })
+            .filter(item => item && FeedFilter.testItem(feed.filter, item))
+    }, [feed, itemsMap, sourceMap])
+
     const handleShortcuts = useCallback(
         (item: RSSItem, e: KeyboardEvent) => dispatch(itemShortcuts(item, e)),
-        []
+        [dispatch]
     )
     const handleMarkRead = useCallback(
         (item: RSSItem) => dispatch(markRead(item)),
-        []
+        [dispatch]
     )
     const handleContextMenu = useCallback(
         (fid: string, item: RSSItem, e) => dispatch(openItemMenu(item, fid, e)),
-        []
+        [dispatch]
     )
     const handleLoadMore = useCallback(
         (f: RSSFeed) => dispatch(loadMore(f)),
-        []
+        [dispatch]
     )
     const handleShowItem = useCallback(
         (fid: string, item: RSSItem) => dispatch(showItem(fid, item)),
-        []
+        [dispatch]
     )
 
     const feedProps: FeedProps = {

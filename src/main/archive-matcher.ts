@@ -219,7 +219,7 @@ export function queryArchiveRows(
             .prepare(
                 `SELECT i._id AS id,i.title,i.link,i.date,coalesce(i.creator,'') AS author,coalesce(s.name,'已退订来源') AS source,
                 ${metaColumns},
-                coalesce(f.body, html_text(i.content))||char(10)||coalesce(c.fullText,'')||char(10)||coalesce(c.offlineText,'') AS body
+                substr(coalesce(f.body, html_text(i.content))||char(10)||coalesce(c.fullText,'')||char(10)||coalesce(c.offlineText,''), 1, 262144) AS body
                 FROM items i
                 LEFT JOIN sources s ON s.sid=i.source
                 LEFT JOIN article_content c ON c.itemId=i._id

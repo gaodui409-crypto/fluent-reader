@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="color-scheme" content="light dark">
     <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src-elem 'sha256-LHm0LiX0ObX/CceE/RBq6UF8PXULdyH6Iz2r7TGIzOk='; img-src http: https: data:; style-src 'self' 'unsafe-inline'; frame-src http: https:; media-src http: https:; connect-src https: http:">
+        content="default-src 'none'; script-src-elem 'sha256-9im3ikTbSDIPIE29MQnzFz54E4GSxEubZs4hJBxS6Qg='; img-src http: https: data:; style-src 'self' 'unsafe-inline'; frame-src http: https:; media-src http: https:; connect-src https: http:">
     <title>Article</title>
     <link rel="stylesheet" href="article.css" />
 </head>
@@ -17,13 +17,13 @@
             <button type="button" id="lightbox-reset" class="lightbox-btn" aria-label="重置缩放">100%</button>
             <button type="button" id="lightbox-close" class="lightbox-btn" aria-label="关闭预览" autofocus>×</button>
         </div>
-        <div id="lightbox-stage" class="lightbox-stage">
+        <div class="lightbox-stage" id="lightbox-stage">
             <button type="button" id="lightbox-prev" class="lightbox-nav lightbox-prev" aria-label="上一张图片">‹</button>
             <img id="lightbox-img" alt="" draggable="false" />
             <button type="button" id="lightbox-next" class="lightbox-nav lightbox-next" aria-label="下一张图片">›</button>
         </div>
     </dialog>
-    <script integrity="sha256-LHm0LiX0ObX/CceE/RBq6UF8PXULdyH6Iz2r7TGIzOk=" src="article.js"></script>
+    <script integrity="sha256-9im3ikTbSDIPIE29MQnzFz54E4GSxEubZs4hJBxS6Qg=" src="article.js"></script>
     <!-- Run "node -e \"console.log('sha256-'+require('crypto').createHash('sha256').update(require('fs').readFileSync('dist/article/article.js')).digest('base64'))\"" for hash -->
 </body>
 </html>

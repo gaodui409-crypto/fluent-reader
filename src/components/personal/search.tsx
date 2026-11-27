@@ -143,6 +143,25 @@ export default function FullSearch() {
                 event.shiftKey &&
                 event.key.toLowerCase() === "f"
             ) {
+                const otherModalOpen = Array.from(
+                    document.querySelectorAll<HTMLElement>(
+                        ".ms-Dialog-main, .ms-Modal-scrollableContent, .fui-DialogSurface"
+                    )
+                ).some(
+                    el =>
+                        el.getClientRects().length > 0 &&
+                        getComputedStyle(el).visibility !== "hidden"
+                )
+                if (otherModalOpen) return
+                event.preventDefault()
+                show()
+                return
+            }
+            if (
+                (event.ctrlKey || event.metaKey) &&
+                event.shiftKey &&
+                event.key.toLowerCase() === "f"
+            ) {
                 event.preventDefault()
                 show()
             }

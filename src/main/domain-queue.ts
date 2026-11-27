@@ -2,8 +2,12 @@ import type { QueueSummary, QueueTask } from "../personal-types"
 
 export class RequestError extends Error {
     retryMs: number
-    constructor(public status: number, retryAfter?: string) {
-        super(`HTTP ${status}`)
+    constructor(
+        public status: number,
+        retryAfter?: string | null,
+        detailMessage?: string
+    ) {
+        super(detailMessage || `HTTP ${status}`)
         const seconds = Number(retryAfter)
         const delay = retryAfter
             ? Number.isFinite(seconds)
@@ -56,10 +60,15 @@ export class DomainQueue {
     private nextId = 0
     private active = 0
     private failedTotal = 0
+    private closed = false
     private activeHosts = new Set<string>()
     private lastFinished = new Map<string, number>()
     private backoffUntil = new Map<string, number>()
-    private pending: { task: QueueTask; run: () => Promise<void> }[] = []
+    private pending: {
+        task: QueueTask
+        run: () => Promise<void>
+        cancel: (reason: Error) => void
+    }[] = []
     private finished: QueueTask[] = []
     private runningTasks = new Map<number, QueueTask>()
     private timer: ReturnType<typeof setTimeout>
@@ -88,7 +97,22 @@ export class DomainQueue {
             .map(task => ({ ...task }))
     }
 
+    close() {
+        this.closed = true
+        clearTimeout(this.timer)
+        const cancelled = this.pending.splice(0, this.pending.length)
+        const err = new Error("应用正在退出，已取消等待中的后台任务。")
+        for (const item of cancelled) {
+            item.cancel(err)
+        }
+    }
+
     add<T>(address: string, label: string, work: () => Promise<T>): Promise<T> {
+        if (this.closed) {
+            return Promise.reject(
+                new Error("应用正在退出，已取消等待中的后台任务。")
+            )
+        }
         const host = httpURL(address).hostname.toLowerCase()
         const task: QueueTask = {
             id: ++this.nextId,
@@ -115,6 +139,11 @@ export class DomainQueue {
 
             this.pending.push({
                 task,
+                cancel: reason => {
+                    task.state = "failed"
+                    task.error = String(reason.message || reason)
+                    reject(reason)
+                },
                 run: async () => {
                     try {
                         const value = await work()
@@ -146,6 +175,7 @@ export class DomainQueue {
 
     private pump() {
         clearTimeout(this.timer)
+        if (this.closed) return
         const config = this.config()
         const interval = Math.max(0, config.domainInterval) * 1000
         const concurrency = Math.max(1, Math.min(8, config.concurrency))

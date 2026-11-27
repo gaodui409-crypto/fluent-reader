@@ -38,12 +38,12 @@ const ALLOWED_ATTRS = new Set([
     "aria-label",
     "aria-hidden",
     "role",
-    "frameborder",
-    "allowfullscreen",
     "loading",
     "decoding",
     "data-lang",
 ])
+
+const RESERVED_CLASS_PREFIX_RE = /^(?:lightbox|code|toc|reply|replies)(?:-|$)/i
 
 const RESERVED_IDS = new Set([
     "main",
@@ -66,6 +66,7 @@ const IMAGE_HREF_RE = /\.(?:png|jpe?g|webp|gif|svg|avif)(?:[?#].*)?$/i
 let wheelBound = false
 let currentOriginUrl = ""
 let codeBlockCounter = 0
+let currentRenderEpoch = 0
 
 function resolveWidthCh(mode) {
     if (mode === "narrow") return "60ch"
@@ -195,6 +196,27 @@ function sanitizeFragment(htmlString, rawUrl, tagName = "div") {
 
     const originBase = parseOriginBase(rawUrl)
 
+    for (const frame of Array.from(rootEl.querySelectorAll("iframe, frame"))) {
+        const frameSrc =
+            frame.tagName === "IFRAME"
+                ? resolveAttrUrl(frame.getAttribute("src"), originBase)
+                : ""
+        if (frameSrc && /^https?:/i.test(frameSrc)) {
+            const p = dom.createElement("p")
+            const link = dom.createElement("a")
+            link.setAttribute("href", frameSrc)
+            link.setAttribute("rel", "noopener noreferrer")
+            const label = (frame.getAttribute("title") || "").trim()
+            link.textContent = label
+                ? `打开嵌入内容：${label}`
+                : `打开嵌入内容（${frameSrc}）`
+            p.append(link)
+            frame.replaceWith(p)
+        } else {
+            frame.remove()
+        }
+    }
+
     for (const s of Array.from(
         rootEl.querySelectorAll(
             "script, style, object, embed, base, meta, link, form, input, button, textarea, select"
@@ -217,13 +239,24 @@ function sanitizeFragment(htmlString, rawUrl, tagName = "div") {
                 } else if (val !== attr.value) {
                     el.setAttribute("id", val)
                 }
+            } else if (name === "class") {
+                const safeTokens = attr.value
+                    .split(/\s+/)
+                    .filter(t => t && !RESERVED_CLASS_PREFIX_RE.test(t))
+                if (safeTokens.length > 0) {
+                    el.setAttribute("class", safeTokens.join(" "))
+                } else {
+                    el.removeAttribute(attr.name)
+                }
             }
         }
     }
 
     for (const e of Array.from(rootEl.querySelectorAll("[src]"))) {
         const resolved = resolveAttrUrl(e.getAttribute("src"), originBase)
-        if (resolved && /^(https?:|data:)/i.test(resolved)) {
+        const allowDataImg =
+            e.tagName === "IMG" && /^data:image\//i.test(resolved)
+        if (resolved && (/^https?:/i.test(resolved) || allowDataImg)) {
             e.setAttribute("src", resolved)
         } else {
             e.removeAttribute("src")
@@ -251,7 +284,10 @@ function sanitizeFragment(htmlString, rawUrl, tagName = "div") {
                 const tokens = part.trim().split(/\s+/)
                 if (!tokens[0]) return ""
                 const url = resolveAttrUrl(tokens[0], originBase)
-                if (!url || !/^(https?:|data:)/i.test(url)) return ""
+                const allowDataSrcset =
+                    e.tagName === "IMG" && /^data:image\//i.test(url)
+                if (!url || !(/^https?:/i.test(url) || allowDataSrcset))
+                    return ""
                 return [url, ...tokens.slice(1)].join(" ")
             })
             .filter(Boolean)
@@ -839,7 +875,13 @@ function formatFloorDate(value) {
     return parsed.toLocaleString()
 }
 
-window.__appendReplies = function (floors) {
+window.__appendReplies = function (floors, expectedEpoch) {
+    if (
+        expectedEpoch !== undefined &&
+        Number(expectedEpoch) !== currentRenderEpoch
+    ) {
+        return
+    }
     const main = document.getElementById("main")
     if (!main || !Array.isArray(floors)) return
 
@@ -898,6 +940,7 @@ window.__updateArticleStyle = applyStyle
 
 window.__renderArticle = function (payload) {
     if (!payload) return
+    currentRenderEpoch = Number(payload.epoch) || 0
     applyStyle(payload)
     sanitizeAndMount(payload.title, payload.dateText, payload.html, payload.url)
 }

@@ -293,6 +293,26 @@ export function useAIArticleController(id: number) {
     const [targetLanguage, setTargetLanguage] = useState("")
     const requestIdRef = useRef("")
     const cancelledRef = useRef(false)
+    const streamingTextRef = useRef("")
+    streamingTextRef.current = streamingText
+    const offStreamRef = useRef<(() => void) | undefined>(undefined)
+    const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+        undefined
+    )
+    const [trackedItemId, setTrackedItemId] = useState(id)
+    if (trackedItemId !== id) {
+        setTrackedItemId(id)
+        setKind(null)
+        setExpanded(false)
+        setResult(undefined)
+        setCacheState({})
+        setError("")
+        setForceNonce(0)
+        setCopied(false)
+        setStreamingText("")
+        setChunkProgress(null)
+        setBusy(false)
+    }
 
     useEffect(() => {
         setKind(null)
@@ -356,7 +376,8 @@ export function useAIArticleController(id: number) {
         let zeroBasedSeen = false
         const offStream = window.personal.onAIStream
             ? window.personal.onAIStream(ev => {
-                  if (!live || ev.requestId !== reqId) return
+                  if (!live || cancelledRef.current || ev.requestId !== reqId)
+                      return
                   if (typeof ev.text === "string") {
                       setStreamingText(ev.text)
                   }
@@ -375,11 +396,12 @@ export function useAIArticleController(id: number) {
             : undefined
 
         let settled = false
+        offStreamRef.current = offStream
         void window.personal
             .aiGenerate(id, kind, force, reqId)
             .then(value => {
                 settled = true
-                if (live) {
+                if (live && !cancelledRef.current) {
                     setResult(value)
                     setStreamingText("")
                     setChunkProgress(null)
@@ -411,7 +433,7 @@ export function useAIArticleController(id: number) {
                 }
             })
             .finally(() => {
-                if (live) {
+                if (live && !cancelledRef.current) {
                     setBusy(false)
                     setChunkProgress(null)
                 }
@@ -420,6 +442,8 @@ export function useAIArticleController(id: number) {
         return () => {
             live = false
             offStream?.()
+            if (offStreamRef.current === offStream)
+                offStreamRef.current = undefined
             if (!settled) {
                 void window.personal.aiCancel?.(reqId).catch(() => {})
             }
@@ -430,22 +454,18 @@ export function useAIArticleController(id: number) {
         const reqId = requestIdRef.current
         if (!reqId) return
         cancelledRef.current = true
+        offStreamRef.current?.()
+        offStreamRef.current = undefined
         void window.personal.aiCancel?.(reqId).catch(() => {})
+        const partial = streamingTextRef.current
+        if (partial) {
+            setResult(
+                cur => cur || { text: partial, tokens: null, cached: false }
+            )
+        }
+        setStreamingText("")
         setBusy(false)
         setChunkProgress(null)
-        setStreamingText(prev => {
-            if (prev) {
-                setResult(
-                    cur =>
-                        cur || {
-                            text: prev,
-                            tokens: null,
-                            cached: false,
-                        }
-                )
-            }
-            return ""
-        })
     }, [])
 
     const toggleKind = useCallback((target: AIKind) => {
@@ -477,7 +497,8 @@ export function useAIArticleController(id: number) {
         if (!text) return
         window.utils.writeClipboard(text)
         setCopied(true)
-        setTimeout(() => setCopied(false), 1800)
+        clearTimeout(copyTimerRef.current)
+        copyTimerRef.current = setTimeout(() => setCopied(false), 1800)
     }, [result, streamingText])
 
     return {
@@ -773,6 +794,26 @@ export function AIArticlePanel({
                                                 />
                                             </div>
                                         </div>
+                                    )
+                                )}
+                            </div>
+                        ) : kind === "translation" &&
+                          alignedBlocks.length > 0 ? (
+                            <div style={{ display: "grid", gap: "8px" }}>
+                                {alignedBlocks.map((block, idx) =>
+                                    block.isCode ? (
+                                        <div key={idx}>
+                                            {renderCodeSource(
+                                                block.source || block.target,
+                                                textStyle
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <AIMarkdown
+                                            key={idx}
+                                            text={block.target}
+                                            style={textStyle}
+                                        />
                                     )
                                 )}
                             </div>

@@ -6,9 +6,12 @@ files:
     - "./dist/**/*"
     - "!./dist/fonts.vbs"
     - "!**/*.js.map"
+    - "!node_modules/better-sqlite3/deps/**/*"
+    - "!node_modules/better-sqlite3/src/**/*"
     - "!node_modules/better-sqlite3/prebuilds/linux*.node"
     - "!node_modules/better-sqlite3/prebuilds/win32-*.node"
 asarUnpack:
+    - "./dist/archive-worker.js"
     - "./dist/fontlist"
     - "node_modules/better-sqlite3/**/*"
 forceCodeSigning: true

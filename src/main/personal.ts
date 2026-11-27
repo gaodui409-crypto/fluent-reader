@@ -22,7 +22,7 @@ import type { WindowManager } from "./window"
 import { DomainQueue } from "./domain-queue"
 import { SearchIndex } from "./search-index"
 import { Backups } from "./backup"
-import { FullText } from "./web-content"
+import { closeAllRenderedWindows, FullText } from "./web-content"
 import { OfflinePages } from "./offline"
 import { Subscriptions } from "./subscriptions"
 import { AI } from "./ai"
@@ -40,34 +40,14 @@ import { linuxDoJSONPath, LINUXDO } from "../linuxdo"
 import { PersonalPreferencesStore } from "./personal-preferences"
 import {
     clearWebAccount,
+    closeAllWebLoginWindows,
     enrichWebAccounts,
     listWebAccounts,
     lockWebPartitionPermissions,
     openWebLoginWindow,
 } from "./personal-accounts"
 import { humanizePersonalError } from "./error-messages"
-
-const BLOCKED_OPEN_EXTENSIONS = new Set([
-    ".exe",
-    ".bat",
-    ".cmd",
-    ".com",
-    ".ps1",
-    ".vbs",
-    ".vbe",
-    ".js",
-    ".jse",
-    ".wsf",
-    ".wsh",
-    ".msi",
-    ".msp",
-    ".scr",
-    ".hta",
-    ".pif",
-    ".dll",
-    ".reg",
-    ".jar",
-])
+import { applyActiveProxy, registerAfterLegacyMigration } from "./settings"
 
 function buildMigratedQuery(
     rule: StoredRule,
@@ -455,13 +435,23 @@ export function initPersonal(
     store: Store<SchemaTypes>,
     manager: WindowManager
 ) {
-    const changed = () => {
+    let changeTimer: ReturnType<typeof setTimeout> | null = null
+    const flushChanged = () => {
+        if (changeTimer) {
+            clearTimeout(changeTimer)
+            changeTimer = null
+        }
         if (
             manager.hasWindow() &&
             !manager.mainWindow.webContents.isDestroyed()
         ) {
             manager.mainWindow.webContents.send("personal:changed")
         }
+    }
+    const changed = () => {
+        if (changeTimer) return
+        changeTimer = setTimeout(flushChanged, 40)
+        changeTimer.unref?.()
     }
     const getLocale = () => store.get("locale", app.getLocale() || "zh-CN")
     const formatErr = (msg: string) =>
@@ -474,7 +464,21 @@ export function initPersonal(
 
     const queue = new DomainQueue(settings)
     const index = new SearchIndex(sqlite)
-    const backups = new Backups(sqlite, store, settings, changed)
+    const shutdownAuxiliary = () => {
+        if (changeTimer) {
+            clearTimeout(changeTimer)
+            changeTimer = null
+        }
+        index.stop()
+        queue.close()
+        linuxdo.close()
+        closeAllWebLoginWindows()
+        closeAllRenderedWindows()
+    }
+    const backups = new Backups(sqlite, store, settings, changed, () => {
+        shutdownAuxiliary()
+        archive.close()
+    })
     const fullText = new FullText(
         sqlite,
         queue,
@@ -495,7 +499,11 @@ export function initPersonal(
     )
     app.on("browser-window-created", (_, win) => {
         win.once("closed", () => {
-            if (win === manager.mainWindow) linuxdo.close()
+            if (win === manager.mainWindow) {
+                linuxdo.close()
+                closeAllWebLoginWindows()
+                closeAllRenderedWindows()
+            }
         })
     })
     subscriptions.specialFeed = address => {
@@ -514,6 +522,15 @@ export function initPersonal(
     )
 
     runPersonalStartupMigrations(sqlite, store, archive, prefStore)
+    registerAfterLegacyMigration(() => {
+        try {
+            prefStore.ensureInitialSourcePreferences()
+            runPersonalStartupMigrations(sqlite, store, archive, prefStore)
+            changed()
+        } catch (err) {
+            console.warn("Post-legacy migration warning:", err)
+        }
+    })
 
     const sendNotificationForItem = (id: number): boolean => {
         if (!Number.isSafeInteger(id)) throw new Error("无效的文章。")
@@ -602,7 +619,10 @@ export function initPersonal(
         },
         archiveApply: (ids: number[], action: ArchiveAction) => {
             const res = archive.apply(ids, action)
-            triggerActionSideEffects(ids, action)
+            triggerActionSideEffects(
+                res.changes.map(c => c.id),
+                action
+            )
             return res
         },
         archiveUndo: (id: string) => archive.undo(id),
@@ -751,6 +771,9 @@ export function initPersonal(
                 path.join(app.getPath("userData"), "offline")
             )
             const raw = String(targetPath || "").trim()
+            if (/^(\\\\|\/\/)/.test(raw)) {
+                throw new Error("出于安全考虑，不支持直接打开网络共享路径。")
+            }
             const resolved =
                 !raw || raw === "default-offline"
                     ? defaultOffline
@@ -769,11 +792,8 @@ export function initPersonal(
                     throw new Error("所选文件夹或文件不存在。")
                 }
             }
-            if (stat.isFile()) {
-                const ext = path.extname(resolved).toLowerCase()
-                if (BLOCKED_OPEN_EXTENSIONS.has(ext)) {
-                    throw new Error("出于安全考虑，不允许直接打开可执行文件。")
-                }
+            if (!stat.isDirectory()) {
+                throw new Error("出于安全考虑，仅支持打开本地文件夹。")
             }
             const openError = await shell.openPath(resolved)
             if (openError) throw new Error(openError)
@@ -940,6 +960,9 @@ export function initPersonal(
         },
         clearAccount: async (host: string) => {
             const ok = await clearWebAccount(host)
+            if (/(^|\.)linux\.do$/i.test(String(host || "").trim())) {
+                linuxdo.close()
+            }
             prefStore.removeLoginHost(host)
             changed()
             return ok
@@ -974,7 +997,8 @@ export function initPersonal(
         })
     }
 
-    app.whenReady().then(() => {
+    app.whenReady().then(async () => {
+        await applyActiveProxy()
         lockWebPartitionPermissions()
         index.start()
         void backups.scheduled()
@@ -986,7 +1010,7 @@ export function initPersonal(
         timer.unref()
         app.once("will-quit", () => {
             clearInterval(timer)
-            index.stop()
+            shutdownAuxiliary()
             archive.close()
         })
     })
@@ -996,8 +1020,22 @@ export function initPersonal(
             try {
                 prefStore.ensureInitialSourcePreferences()
                 runPersonalStartupMigrations(sqlite, store, archive, prefStore)
+                registerAfterLegacyMigration(() => {
+                    try {
+                        prefStore.ensureInitialSourcePreferences()
+                        runPersonalStartupMigrations(
+                            sqlite,
+                            store,
+                            archive,
+                            prefStore
+                        )
+                        changed()
+                    } catch (err) {
+                        console.warn("Post-legacy migration warning:", err)
+                    }
+                })
                 offline.clearTasks()
-                index.start(true)
+                index.start(false)
                 changed()
             } catch (err) {
                 console.warn("Personal state reset warning:", err)

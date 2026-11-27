@@ -9,6 +9,7 @@ const tables = [
     "archive_rules",
     "article_content",
     "article_activity",
+    "briefings",
 ] as const
 export type LibraryBackup = Partial<
     Record<typeof tables[number], Record<string, unknown>[]>
@@ -32,6 +33,9 @@ export function exportLibraryData(db: Database.Database): LibraryBackup {
 
 export function clearLibraryData(db: Database.Database) {
     db.prepare("DELETE FROM archive_batches").run()
+    db.prepare("DELETE FROM ai_cache").run()
+    db.prepare("DELETE FROM ai_usage").run()
+    db.prepare("DELETE FROM source_health").run()
     for (const table of [...tables].reverse())
         db.prepare(`DELETE FROM ${table}`).run()
 }

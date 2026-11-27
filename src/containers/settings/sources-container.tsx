@@ -106,12 +106,22 @@ const mapDispatchToProps = (dispatch: AppDispatch) => {
         },
         updateSourceIcon: async (source: RSSSource, iconUrl: string) => {
             dispatch(saveSettings())
-            if (await validateFavicon(iconUrl)) {
-                await dispatch(updateSource({ ...source, iconurl: iconUrl }))
-            } else {
-                window.utils.showErrorBox(intl.get("sources.badIcon"), "")
+            try {
+                if (await validateFavicon(iconUrl)) {
+                    await dispatch(
+                        updateSource({ ...source, iconurl: iconUrl })
+                    )
+                } else {
+                    window.utils.showErrorBox(intl.get("sources.badIcon"), "")
+                }
+            } catch (error) {
+                window.utils.showErrorBox(
+                    intl.get("personal.failed"),
+                    String(error)
+                )
+            } finally {
+                dispatch(saveSettings())
             }
-            dispatch(saveSettings())
         },
         updateSourceOpenTarget: (
             source: RSSSource,

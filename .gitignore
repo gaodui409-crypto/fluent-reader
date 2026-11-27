@@ -10,3 +10,4 @@ bin/*
 *.lock
 build/personal-source.zip
 .builder-cache/
+.user/

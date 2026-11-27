@@ -10,7 +10,7 @@ import type {
     AIResult,
     AIUsage,
 } from "../personal-types"
-import { DomainQueue, httpURL } from "./domain-queue"
+import { DomainQueue, httpURL, RequestError } from "./domain-queue"
 
 export const aiDefaults: AIConfig = {
     baseURL: "",
@@ -723,6 +723,15 @@ export class AIClient {
             })
             if (!response.ok) {
                 const detail = await readErrorDetail(response)
+                if (response.status === 429) {
+                    throw new RequestError(
+                        429,
+                        response.headers.get("retry-after"),
+                        detail
+                            ? `AI 接口返回 HTTP 429: ${detail}`
+                            : "AI 接口返回 HTTP 429，请求过于频繁，请稍后重试。"
+                    )
+                }
                 throw new Error(
                     detail
                         ? `AI 接口返回 HTTP ${response.status}: ${detail}`

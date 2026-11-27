@@ -13,6 +13,16 @@ export class SearchIndex {
         if (reset) {
             try {
                 this.sqlite.prepare("DELETE FROM article_fts").run()
+                const totalAfterReset = (
+                    this.sqlite
+                        .prepare("SELECT count(*) AS n FROM items")
+                        .get() as { n: number }
+                ).n
+                this.progress = {
+                    indexed: 0,
+                    total: totalAfterReset,
+                    running: totalAfterReset > 0,
+                }
             } catch (error) {
                 this.progress = {
                     ...this.progress,

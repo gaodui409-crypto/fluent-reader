@@ -410,12 +410,14 @@ export const AIMarkdown: React.FC<{
         const line = lines[i]
 
         // Fenced code block: ```lang ... ```
-        const fenceOpen = /^\s*```([A-Za-z0-9_+#.-]*)\s*$/.exec(line)
+        const fenceOpen = /^\s*(`{3,})([A-Za-z0-9_+#.-]*)\s*$/.exec(line)
         if (fenceOpen) {
-            const lang = fenceOpen[1] || ""
+            const fenceTicks = fenceOpen[1]
+            const lang = fenceOpen[2] || ""
+            const closeFenceRe = new RegExp(`^\\s*${fenceTicks}+\\s*$`)
             const codeLines: string[] = []
             i++
-            while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+            while (i < lines.length && !closeFenceRe.test(lines[i])) {
                 codeLines.push(lines[i])
                 i++
             }

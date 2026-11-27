@@ -451,30 +451,39 @@ const markUnreadDone = (item: RSSItem): ItemActionTypes => ({
     item: item,
 })
 
+const markingReadIds = new Set<number>()
+
 export function markRead(
     item: RSSItem,
     preserveLater = false
 ): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
         item = getState().items[item._id] || item
-        if (!item.hasRead) {
-            await database
-                .update(itemsTable)
-                .set({ hasRead: true })
-                .where(eq(itemsTable._id, item._id))
-            dispatch(markReadDone(item))
-            if (
-                !preserveLater &&
-                item.readLater &&
-                getState().library.removeLaterOnRead
-            )
-                if (getState().page.itemId === item._id) {
-                    pendingReadLaterEvictions.add(item._id)
-                } else {
-                    await dispatch(updateItemMeta(item, { readLater: false }))
+        if (!item.hasRead && !markingReadIds.has(item._id)) {
+            markingReadIds.add(item._id)
+            try {
+                await database
+                    .update(itemsTable)
+                    .set({ hasRead: true })
+                    .where(eq(itemsTable._id, item._id))
+                dispatch(markReadDone(item))
+                if (
+                    !preserveLater &&
+                    item.readLater &&
+                    getState().library.removeLaterOnRead
+                )
+                    if (getState().page.itemId === item._id) {
+                        pendingReadLaterEvictions.add(item._id)
+                    } else {
+                        await dispatch(
+                            updateItemMeta(item, { readLater: false })
+                        )
+                    }
+                if (item.serviceRef) {
+                    dispatch(dispatch(getServiceHooks()).markRead?.(item))
                 }
-            if (item.serviceRef) {
-                dispatch(dispatch(getServiceHooks()).markRead?.(item))
+            } finally {
+                markingReadIds.delete(item._id)
             }
         }
     }
@@ -580,7 +589,8 @@ const toggleStarredDone = (item: RSSItem): ItemActionTypes => ({
 })
 
 export function toggleStarred(item: RSSItem): AppThunk<Promise<void>> {
-    return async dispatch => {
+    return async (dispatch, getState) => {
+        item = getState().items[item._id] || item
         await database
             .update(itemsTable)
             .set({ starred: !item.starred })
@@ -600,7 +610,8 @@ const toggleHiddenDone = (item: RSSItem): ItemActionTypes => ({
 })
 
 export function toggleHidden(item: RSSItem): AppThunk<Promise<void>> {
-    return async dispatch => {
+    return async (dispatch, getState) => {
+        item = getState().items[item._id] || item
         await database
             .update(itemsTable)
             .set({ hidden: !item.hidden })

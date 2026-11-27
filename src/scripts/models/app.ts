@@ -6,6 +6,7 @@ import {
     ADD_SOURCE,
     UPDATE_SOURCE,
     DELETE_SOURCE,
+    UPDATE_UNREAD_COUNTS,
     initSources,
     updateFavicon,
 } from "./source"
@@ -14,6 +15,8 @@ import {
     ItemActionTypes,
     FETCH_ITEMS,
     MARK_ALL_READ,
+    MARK_READ,
+    TOGGLE_HIDDEN,
     fetchItems,
 } from "./item"
 import {
@@ -212,10 +215,11 @@ export type LogMenuActionType =
     | PushNotificationAction
 
 export const TOGGLE_MENU = "TOGGLE_MENU"
+export const SET_MENU_OPEN = "SET_MENU_OPEN"
 
-export interface MenuActionTypes {
-    type: typeof TOGGLE_MENU
-}
+export type MenuActionTypes =
+    | { type: typeof TOGGLE_MENU }
+    | { type: typeof SET_MENU_OPEN; open: boolean }
 
 export const TOGGLE_SETTINGS = "TOGGLE_SETTINGS"
 export const SAVE_SETTINGS = "SAVE_SETTINGS"
@@ -301,10 +305,16 @@ export const openMarkAllMenu = (): ContextMenuActionTypes => ({
     type: OPEN_MARK_ALL_MENU,
 })
 
+export function setMenuOpen(open: boolean): MenuActionTypes {
+    return { type: SET_MENU_OPEN, open }
+}
+
 export function toggleMenu(): AppThunk {
     return (dispatch, getState) => {
         dispatch({ type: TOGGLE_MENU })
-        window.settings.setDefaultMenu(getState().app.menu)
+        if (getWindowBreakpoint()) {
+            window.settings.setDefaultMenu(getState().app.menu)
+        }
     }
 }
 
@@ -681,6 +691,64 @@ export function appReducer(
                 default:
                     return state
             }
+        case UPDATE_UNREAD_COUNTS: {
+            const nextBySource = { ...state.unseenBySource }
+            let reduced = 0
+            let changed = false
+            for (const [k, prevCount] of Object.entries(nextBySource)) {
+                const sid = Number(k)
+                const cap = Math.max(0, action.sources[sid]?.unreadCount || 0)
+                if (prevCount > cap) {
+                    reduced += prevCount - cap
+                    changed = true
+                    if (cap <= 0) delete nextBySource[sid]
+                    else nextBySource[sid] = cap
+                }
+            }
+            const totalUnreadCap = Object.values(action.sources)
+                .filter(s => s && !s.hidden)
+                .reduce((acc, s) => acc + Math.max(0, s.unreadCount || 0), 0)
+            const nextAll = Math.min(
+                totalUnreadCap,
+                Math.max(0, state.unseenAll - reduced)
+            )
+            if (!changed && nextAll === state.unseenAll) return state
+            saveStoredUnseen(nextBySource, nextAll)
+            return {
+                ...state,
+                unseenBySource: nextBySource,
+                unseenAll: nextAll,
+            }
+        }
+        case MARK_READ:
+        case TOGGLE_HIDDEN: {
+            if (
+                action.type === TOGGLE_HIDDEN &&
+                (action.item.hidden ||
+                    action.item.hasRead ||
+                    action.item.feedHidden)
+            )
+                return state
+            if (
+                action.type === MARK_READ &&
+                (action.item.hidden || action.item.feedHidden)
+            )
+                return state
+            const sid = action.item.source
+            const cur = state.unseenBySource[sid] || 0
+            if (cur <= 0 && state.unseenAll <= 0) return state
+            const nextBySource = { ...state.unseenBySource }
+            if (cur <= 1) delete nextBySource[sid]
+            else nextBySource[sid] = cur - 1
+            const nextAll =
+                cur > 0 ? Math.max(0, state.unseenAll - 1) : state.unseenAll
+            saveStoredUnseen(nextBySource, nextAll)
+            return {
+                ...state,
+                unseenBySource: nextBySource,
+                unseenAll: nextAll,
+            }
+        }
         case MARK_ALL_READ: {
             if (!action.time) {
                 const nextBySource = { ...state.unseenBySource }
@@ -816,6 +884,13 @@ export function appReducer(
                     event: "#mark-all-toggle",
                 },
             }
+        case SET_MENU_OPEN:
+            return state.menu === action.open
+                ? state
+                : {
+                      ...state,
+                      menu: action.open,
+                  }
         case TOGGLE_MENU:
             return {
                 ...state,

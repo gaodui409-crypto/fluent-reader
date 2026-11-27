@@ -3,6 +3,12 @@ import { parseHTML } from "linkedom"
 import Parser from "rss-parser"
 import type Database from "better-sqlite3"
 import { DomainQueue, httpURL } from "./domain-queue"
+import {
+    assertAllowedCrossTarget,
+    assertSafeTargetUrl,
+    fetchWithSafeRedirects,
+    shouldIncludeCredentials,
+} from "./net-guard"
 import { responseHTML, WEB_PARTITION } from "./web-content"
 import type {
     DiscoveredFeed,
@@ -27,7 +33,10 @@ export class Subscriptions {
         address: string,
         allowJSON = false
     ): Promise<{ text: string; url: string; permanent: string }> {
-        let url = httpURL(address).href
+        const initialUrl = httpURL(address)
+        assertSafeTargetUrl(initialUrl)
+        let url = initialUrl.href
+        let handedOff = false
         let permanent = "",
             redirects = 0
         return new Promise((resolve, reject) => {
@@ -48,6 +57,7 @@ export class Subscriptions {
                 30000
             )
             request.on("error", error => {
+                if (handedOff) return
                 clearTimeout(timer)
                 reject(error)
             })
@@ -55,13 +65,49 @@ export class Subscriptions {
                 try {
                     if (++redirects > 8)
                         throw new Error("订阅地址跳转次数过多。")
-                    url = httpURL(new URL(target, url).href).href
+                    const nextUrl = httpURL(new URL(target, url).href)
+                    assertAllowedCrossTarget(initialUrl, nextUrl)
+                    url = nextUrl.href
                     if (
                         [301, 308].includes(status) &&
                         permanent !== "temporary"
                     )
                         permanent = url
                     else permanent = "temporary"
+                    if (!shouldIncludeCredentials(initialUrl, new URL(url))) {
+                        handedOff = true
+                        clearTimeout(timer)
+                        request.abort()
+                        void fetchWithSafeRedirects(
+                            (u, init) =>
+                                session
+                                    .fromPartition(WEB_PARTITION)
+                                    .fetch(u, init),
+                            url,
+                            {
+                                credentials: "omit",
+                                timeoutMs: 30000,
+                                maxRedirects: Math.max(0, 8 - redirects),
+                            }
+                        )
+                            .then(async ({ response, finalUrl }) =>
+                                resolve({
+                                    text: await responseHTML(
+                                        response,
+                                        allowJSON
+                                    ),
+                                    url: finalUrl,
+                                    permanent:
+                                        permanent === "temporary"
+                                            ? ""
+                                            : finalUrl === url
+                                            ? permanent
+                                            : "",
+                                })
+                            )
+                            .catch(reject)
+                        return
+                    }
                     request.followRedirect()
                 } catch (error) {
                     fail(error)
@@ -77,9 +123,9 @@ export class Subscriptions {
                     else chunks.push(Buffer.from(chunk))
                 })
                 response.on("error", fail)
-                response.on("aborted", () =>
-                    fail(new Error("订阅源响应被中断。"))
-                )
+                response.on("aborted", () => {
+                    if (!handedOff) fail(new Error("订阅源响应被中断。"))
+                })
                 response.on("end", () => {
                     clearTimeout(timer)
                     const headers = new Headers()
@@ -286,7 +332,24 @@ export class Subscriptions {
         if (!source || !source.redirect || source.serviceRef)
             throw new Error("该订阅源当前没有可更新的永久跳转地址。")
         const url = httpURL(source.redirect).href
+        const collision = this.db
+            .prepare("SELECT sid,archived FROM sources WHERE url=? AND sid<>?")
+            .get(url, sid) as { sid: number; archived: number } | undefined
+        if (collision && !collision.archived) {
+            throw new Error("该跳转地址已存在于当前订阅列表中。")
+        }
         this.db.transaction(() => {
+            if (collision && collision.archived) {
+                this.db
+                    .prepare("UPDATE items SET source=? WHERE source=?")
+                    .run(sid, collision.sid)
+                this.db
+                    .prepare("DELETE FROM source_health WHERE sid=?")
+                    .run(collision.sid)
+                this.db
+                    .prepare("DELETE FROM sources WHERE sid=?")
+                    .run(collision.sid)
+            }
             this.db
                 .prepare("UPDATE sources SET url=? WHERE sid=?")
                 .run(url, sid)

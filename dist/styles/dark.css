@@ -1,8 +1,12 @@
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"])
         .ms-Button--commandBar.active
-        .ms-Button-icon {
-        color: #c7e0f4;
+        .ms-Button-icon,
+    :root:not([data-theme="light"]) .ms-Button--commandBar.active i.ms-Icon,
+    :root:not([data-theme="light"])
+        .ms-Button--commandBar.active
+        [class*="aaTextIcon"] {
+        color: #c7e0f4 !important;
     }
     :root:not([data-theme="light"]) .settings .loading {
         background-color: #000a;
@@ -53,8 +57,10 @@
         box-shadow: #0000 0 0 10px;
     }
 }
-:root[data-theme="dark"] .ms-Button--commandBar.active .ms-Button-icon {
-    color: #c7e0f4;
+:root[data-theme="dark"] .ms-Button--commandBar.active .ms-Button-icon,
+:root[data-theme="dark"] .ms-Button--commandBar.active i.ms-Icon,
+:root[data-theme="dark"] .ms-Button--commandBar.active [class*="aaTextIcon"] {
+    color: #c7e0f4 !important;
 }
 :root[data-theme="dark"] .settings .loading {
     background-color: #000a;

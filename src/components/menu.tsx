@@ -6,7 +6,7 @@ import { SourceGroup } from "../schema-types"
 import { RSSSource } from "../scripts/models/source"
 import { initFeeds } from "../scripts/models/feed"
 import { useAppSelector, useAppDispatch } from "../scripts/reducer"
-import { toggleMenu, openGroupMenu } from "../scripts/models/app"
+import { toggleMenu, setMenuOpen, openGroupMenu } from "../scripts/models/app"
 import { toggleGroupExpansion } from "../scripts/models/group"
 import {
     selectAllArticles,
@@ -36,6 +36,7 @@ const useMenuClasses = makeStyles({
     menuBtn: {
         height: "var(--navHeight)",
         lineHeight: "var(--navHeight)",
+        WebkitAppRegion: "no-drag",
     },
     menuBtnBlurred: {
         color: "var(--neutralSecondaryAlt)",
@@ -46,6 +47,8 @@ const useMenuClasses = makeStyles({
     },
     menuHeader: {
         height: "var(--navHeight)",
+    },
+    menuHeaderShow: {
         WebkitAppRegion: "drag",
     },
     menuContainer: {
@@ -63,7 +66,10 @@ const useMenuClasses = makeStyles({
         },
     },
     menuContainerShow: {
-        pointerEvents: "unset",
+        "pointerEvents": "unset",
+        "@media (max-width: 1279px)": {
+            WebkitAppRegion: "no-drag",
+        },
     },
     menuArticleBlurred: {
         filter: "var(--blur)",
@@ -79,9 +85,10 @@ const useMenuClasses = makeStyles({
         "boxShadow": "5px 0 25px #0004",
         "boxSizing": "border-box",
         "transition":
-            "clip-path var(--transition-timing) 0.32s, opacity cubic-bezier(0, 0, 0.2, 1) 0.32s",
+            "clip-path var(--transition-timing) 0.32s, opacity cubic-bezier(0, 0, 0.2, 1) 0.32s, visibility 0s linear 0.32s",
         "clipPath": "inset(0 100% 0 0)",
         "opacity": 0,
+        "visibility": "hidden",
         "@media (min-width: 1280px)": {
             backgroundColor: "var(--sidebarBg, var(--neutralLighter))",
             boxShadow: "none",
@@ -91,6 +98,9 @@ const useMenuClasses = makeStyles({
     menuInnerShow: {
         "clipPath": "inset(0 -50px 0 0)",
         "opacity": 1,
+        "visibility": "visible",
+        "transition":
+            "clip-path var(--transition-timing) 0.32s, opacity cubic-bezier(0, 0, 0.2, 1) 0.32s, visibility 0s linear 0s",
         "@media (min-width: 1280px)": {
             clipPath: "inset(0)",
         },
@@ -136,6 +146,31 @@ export const Menu: React.FC = () => {
     const unseenBySource = useAppSelector(s => s.app.unseenBySource)
     const articleOverlayOpen = useArticleOverlayOpen()
     const { counts } = useMenuCollections()
+
+    // Keep sidebar state synchronized across the 1280px docked/drawer breakpoint
+    const prevWideRef = useRef(isWideScreen)
+    useEffect(() => {
+        if (prevWideRef.current === isWideScreen) return
+        prevWideRef.current = isWideScreen
+        if (!isWideScreen) {
+            dispatch(setMenuOpen(false))
+        } else {
+            dispatch(setMenuOpen(globalThis.settings.getDefaultMenu()))
+        }
+    }, [isWideScreen, dispatch])
+
+    // Allow Escape to close transient narrow-screen drawer
+    useEffect(() => {
+        if (isWideScreen || !display) return
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && !articleOverlayOpen) {
+                e.stopPropagation()
+                dispatch(setMenuOpen(false))
+            }
+        }
+        window.addEventListener("keydown", onKeyDown)
+        return () => window.removeEventListener("keydown", onKeyDown)
+    }, [isWideScreen, display, articleOverlayOpen, dispatch])
 
     const openItems = useMemo(
         () =>
@@ -219,11 +254,28 @@ export const Menu: React.FC = () => {
         [sources]
     )
 
+    const menuInnerRef = useRef<HTMLDivElement>(null)
     const treeRef = useRef<HTMLDivElement>(null)
     const previousDisplayRef = useRef(display)
     useEffect(() => {
         if (display && !previousDisplayRef.current) {
             findFirstFocusable(treeRef.current)?.focus()
+        } else if (!display && previousDisplayRef.current) {
+            const active = document.activeElement
+            if (active && menuInnerRef.current?.contains(active)) {
+                requestAnimationFrame(() => {
+                    const trigger = document.getElementById(
+                        "nav-menu-toggle-btn"
+                    )
+                    if (trigger) {
+                        trigger.focus({ preventScroll: true })
+                    } else {
+                        document
+                            .getElementById("refocus")
+                            ?.focus({ preventScroll: true })
+                    }
+                })
+            }
         }
         previousDisplayRef.current = display
     }, [display, findFirstFocusable])
@@ -239,44 +291,51 @@ export const Menu: React.FC = () => {
             )}
             onClick={handleToggleMenu}>
             <div
+                ref={menuInnerRef}
+                inert={!display}
+                role={!isWideScreen ? "dialog" : undefined}
+                aria-modal={!isWideScreen && display ? true : undefined}
+                aria-label={!isWideScreen ? intl.get("nav.menu") : undefined}
                 className={mergeClasses(
                     menuClasses.menuInner,
                     display && menuClasses.menuInnerShow,
                     isDarwin && menuClasses.menuInnerDarwin
                 )}
                 onClick={e => e.stopPropagation()}>
-                <div className={menuClasses.menuHeader}>
-                    {display && (
-                        <FlatButtonGroup
-                            styleClass={
-                                isDarwin
-                                    ? menuClasses.menuGroupDarwin
+                <div
+                    className={mergeClasses(
+                        menuClasses.menuHeader,
+                        display &&
+                            !articleOverlayOpen &&
+                            menuClasses.menuHeaderShow
+                    )}>
+                    <FlatButtonGroup
+                        styleClass={
+                            isDarwin ? menuClasses.menuGroupDarwin : undefined
+                        }>
+                        <FlatButton
+                            styleClass={mergeClasses(
+                                menuClasses.menuBtn,
+                                isBlurred
+                                    ? menuClasses.menuBtnBlurred
                                     : undefined
-                            }>
-                            <FlatButton
-                                styleClass={mergeClasses(
-                                    menuClasses.menuBtn,
-                                    isBlurred
-                                        ? menuClasses.menuBtnBlurred
-                                        : undefined
-                                )}
-                                title={`${intl.get("menu.close")} (F1)`}
-                                ariaLabel={intl.get("menu.close")}
-                                onClick={handleToggleMenu}>
-                                {isWideScreen ? (
-                                    <Icon
-                                        iconName={
-                                            isDarwin
-                                                ? "SidePanel"
-                                                : "GlobalNavButton"
-                                        }
-                                    />
-                                ) : (
-                                    <Icon iconName="Back" />
-                                )}
-                            </FlatButton>
-                        </FlatButtonGroup>
-                    )}
+                            )}
+                            title={`${intl.get("menu.close")} (F1)`}
+                            ariaLabel={intl.get("menu.close")}
+                            onClick={handleToggleMenu}>
+                            {isWideScreen ? (
+                                <Icon
+                                    iconName={
+                                        isDarwin
+                                            ? "SidePanel"
+                                            : "GlobalNavButton"
+                                    }
+                                />
+                            ) : (
+                                <Icon iconName="Back" />
+                            )}
+                        </FlatButton>
+                    </FlatButtonGroup>
                 </div>
                 <div className={menuClasses.navWrapper}>
                     <Tree
@@ -298,7 +357,6 @@ export const Menu: React.FC = () => {
                         <MenuFoldersAndTagsSection
                             selected={selected}
                             folders={folders}
-                            unfiledCount={counts.unfiled}
                         />
                         <MenuSubscriptionsSection
                             selected={selected}

@@ -18,6 +18,7 @@ import {
     MARK_READ,
     MARK_UNREAD,
     MARK_ALL_READ,
+    TOGGLE_HIDDEN,
 } from "./item"
 import { saveSettings } from "./app"
 import {
@@ -692,6 +693,19 @@ export function sourceReducer(
                     ? 1
                     : -1
             if (delta === 0) return state
+            return {
+                ...state,
+                [action.item.source]: {
+                    ...target,
+                    unreadCount: Math.max(0, target.unreadCount + delta),
+                } as RSSSource,
+            }
+        }
+        case TOGGLE_HIDDEN: {
+            const target = state[action.item.source]
+            if (!target || action.item.hasRead || action.item.feedHidden)
+                return state
+            const delta = action.item.hidden ? 1 : -1
             return {
                 ...state,
                 [action.item.source]: {

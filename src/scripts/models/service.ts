@@ -282,15 +282,18 @@ export function importGroups(): AppThunk<Promise<void>> {
 export function removeService(): AppThunk<Promise<void>> {
     return async (dispatch, getState) => {
         dispatch(saveSettings())
-        const state = getState()
-        const promises = Object.values(state.sources)
-            .filter(s => s.serviceRef)
-            .map(async s => {
-                await dispatch(deleteSource(s, true))
-            })
-        await Promise.all(promises)
-        dispatch(saveServiceConfigs({ type: SyncService.None }))
-        dispatch(saveSettings())
+        try {
+            const state = getState()
+            const promises = Object.values(state.sources)
+                .filter(s => s.serviceRef)
+                .map(async s => {
+                    await dispatch(deleteSource(s, true))
+                })
+            await Promise.all(promises)
+            dispatch(saveServiceConfigs({ type: SyncService.None }))
+        } finally {
+            dispatch(saveSettings())
+        }
     }
 }
 

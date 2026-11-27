@@ -83,17 +83,49 @@ async function saveDraft(id: number) {
 }
 
 let closing = false
+let promptingClose = false
 window.addEventListener("beforeunload", event => {
     const dirty = [...drafts].filter(([, d]) => d.dirty || d.pending)
     if (closing || !dirty.length) return
     event.preventDefault()
     event.returnValue = false as unknown as string
-    void Promise.all(dirty.map(([id]) => saveDraft(id))).then(() => {
-        if ([...drafts.values()].every(d => !d.dirty && !d.pending)) {
-            closing = true
-            window.utils.closeWindow()
-        }
-    })
+    if (promptingClose) return
+    promptingClose = true
+    void Promise.all(dirty.map(([id]) => saveDraft(id)))
+        .then(async () => {
+            const remaining = [...drafts].filter(
+                ([, d]) => d.dirty || d.pending
+            )
+            if (remaining.length === 0) {
+                closing = true
+                window.utils.closeWindow()
+                return
+            }
+            const [failedId, failedDraft] = remaining[0]
+            const exitAnyway = await window.utils.showMessageBox(
+                "有文章备注未能自动保存",
+                `当前有 ${remaining.length} 篇备注尚未保存成功（${
+                    failedDraft.error || "版本冲突或写入异常"
+                }）。选择「仍要退出」将放弃未保存修改直接关闭应用，选择「返回处理」可留在软件中重试。`,
+                "仍要退出",
+                "返回处理",
+                true,
+                "warning"
+            )
+            if (exitAnyway) {
+                closing = true
+                window.utils.closeWindow()
+            } else {
+                window.dispatchEvent(
+                    new CustomEvent("open-article-notes", {
+                        detail: { id: failedId },
+                    })
+                )
+            }
+        })
+        .finally(() => {
+            promptingClose = false
+        })
 })
 
 const useStyles = makeStyles({
@@ -160,8 +192,22 @@ export function useArticleNotesState(id: number) {
     const [, update] = useState(0)
     const [error, setError] = useState("")
     const [members, setMembers] = useState<number[]>([])
+    const [membersLoaded, setMembersLoaded] = useState(false)
     const [busy, setBusy] = useState(false)
     const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+    const latestIdRef = useRef(id)
+    latestIdRef.current = id
+
+    // Synchronously reset article-scoped state during render when switching items
+    const [trackedId, setTrackedId] = useState(id)
+    if (trackedId !== id) {
+        setTrackedId(id)
+        setMembers([])
+        setMembersLoaded(false)
+        setError("")
+        setBusy(false)
+    }
+
     const draft = drafts.get(id)
 
     useEffect(() => {
@@ -183,7 +229,10 @@ export function useArticleNotesState(id: number) {
             window.personal
                 .archiveMemberships(id)
                 .then(ids => {
-                    if (active) setMembers(ids)
+                    if (active) {
+                        setMembers(ids)
+                        setMembersLoaded(true)
+                    }
                 })
                 .catch(e => {
                     if (active) setError(String(e))
@@ -216,10 +265,11 @@ export function useArticleNotesState(id: number) {
 
     const appendQuote = useCallback(
         async (rawQuote: string) => {
+            const targetId = id
             const trimmed = (rawQuote || "").trim()
             if (!trimmed) return
             try {
-                const current = await ensureDraft(id)
+                const current = await ensureDraft(targetId)
                 const quotedBlock =
                     trimmed
                         .split(/\r?\n/)
@@ -230,11 +280,13 @@ export function useArticleNotesState(id: number) {
                     : ""
                 current.text = prefix + quotedBlock
                 current.dirty = true
-                notify(id)
+                notify(targetId)
                 clearTimeout(timer.current)
-                await saveDraft(id)
+                await saveDraft(targetId)
             } catch (e) {
-                setError(String(e))
+                if (latestIdRef.current === targetId) {
+                    setError(String(e))
+                }
             }
         },
         [id]
@@ -263,28 +315,30 @@ export function useArticleNotesState(id: number) {
 
     const toggleFolder = useCallback(
         async (targetFolderId: number) => {
-            if (!targetFolderId) return
+            const targetId = id
+            if (!targetFolderId || !membersLoaded) return
             const isMember = members.includes(targetFolderId)
             setBusy(true)
             try {
-                const result = await window.personal.archiveApply([id], {
+                const result = await window.personal.archiveApply([targetId], {
                     kind: isMember ? "remove" : "folder",
                     folderId: targetFolderId,
                 })
                 await dispatch(refreshArchive(result))
-                setError("")
+                if (latestIdRef.current === targetId) setError("")
             } catch (e) {
-                setError(String(e))
+                if (latestIdRef.current === targetId) setError(String(e))
             } finally {
-                setBusy(false)
+                if (latestIdRef.current === targetId) setBusy(false)
             }
         },
-        [dispatch, id, members]
+        [dispatch, id, members, membersLoaded]
     )
 
     return {
         draft,
         members,
+        membersLoaded,
         error,
         busy,
         updateText,
@@ -297,10 +351,12 @@ export function useArticleNotesState(id: number) {
 
 export function ArticleNotesDrawer({
     open,
+    onOpen,
     onClose,
     state,
 }: {
     open: boolean
+    onOpen?: () => void
     onClose: () => void
     state: ReturnType<typeof useArticleNotesState>
 }) {
@@ -311,6 +367,7 @@ export function ArticleNotesDrawer({
     const {
         draft,
         members,
+        membersLoaded,
         error,
         busy,
         updateText,
@@ -403,7 +460,7 @@ export function ArticleNotesDrawer({
                                         <DefaultButton
                                             key={folder.id}
                                             className={classes.chipBtn}
-                                            disabled={busy}
+                                            disabled={busy || !membersLoaded}
                                             checked={inFolder}
                                             aria-pressed={inFolder}
                                             title={
@@ -429,7 +486,7 @@ export function ArticleNotesDrawer({
                             onChange={selectedId =>
                                 void toggleFolder(selectedId)
                             }
-                            disabled={busy}
+                            disabled={busy || !membersLoaded}
                             trailingActions={
                                 <DefaultButton onClick={onClose}>
                                     收起面板
@@ -439,9 +496,17 @@ export function ArticleNotesDrawer({
                     </div>
                 </div>
             ) : (
-                <MessageBar messageBarType={MessageBarType.warning}>
-                    {draft.error}
-                </MessageBar>
+                <div className={classes.actionsRow}>
+                    <MessageBar messageBarType={MessageBarType.warning}>
+                        {draft.error}
+                    </MessageBar>
+                    {onOpen && (
+                        <DefaultButton onClick={onOpen}>展开处理</DefaultButton>
+                    )}
+                    <DefaultButton onClick={retryConflict}>
+                        重试保存
+                    </DefaultButton>
+                </div>
             )}
         </div>
     )
@@ -457,6 +522,7 @@ export function ArticleNotes({ id }: { id: number }) {
             </DefaultButton>
             <ArticleNotesDrawer
                 open={open}
+                onOpen={() => setOpen(true)}
                 onClose={() => setOpen(false)}
                 state={state}
             />

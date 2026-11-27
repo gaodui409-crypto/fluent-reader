@@ -1,4 +1,16 @@
+import * as path from "node:path"
 import type Database from "better-sqlite3"
+
+function isInsideApplicationDirectory(targetFolder: string): boolean {
+    const trimmed = String(targetFolder || "").trim()
+    if (!trimmed) return false
+    const appDir = path.resolve(path.dirname(process.execPath))
+    const resolved = path.resolve(trimmed)
+    const norm = (p: string) =>
+        process.platform === "win32" ? p.toLowerCase() : p
+    const rel = path.relative(norm(appDir), norm(resolved))
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
+}
 import type Store from "electron-store"
 import type { SchemaTypes } from "../schema-types"
 import { defaultPersonalSettings, PersonalSettings } from "../personal-types"
@@ -22,7 +34,21 @@ export class PersonalPreferencesStore {
     }
 
     ensureInitialSourcePreferences() {
-        if (this.store.has("sourcePreferences")) return
+        const existingPref = this.store.get("sourcePreferences")
+        const hasPopulated = Boolean(
+            existingPref &&
+                (Object.keys(existingPref.sources || {}).length > 0 ||
+                    Object.keys(existingPref.groups || {}).length > 0)
+        )
+        if (this.store.has("sourcePreferences") && hasPopulated) return
+        if (this.store.has("sourcePreferences")) {
+            const count = (
+                this.sqlite
+                    .prepare("SELECT count(*) AS n FROM sources")
+                    .get() as { n: number }
+            ).n
+            if (count === 0) return
+        }
         const initial: PreferenceOverrides = { sources: {}, groups: {} }
         const sources = this.sqlite
             .prepare("SELECT sid,openTarget,fetchFrequency FROM sources")
@@ -216,11 +242,11 @@ export class PersonalPreferencesStore {
         const next: PersonalSettings = {
             domainInterval: Number(value.domainInterval),
             concurrency: Number(value.concurrency),
-            backupFolder: String(value.backupFolder || ""),
+            backupFolder: String(value.backupFolder || "").trim(),
             backupSchedule: value.backupSchedule,
             backupKeep: Number(value.backupKeep),
             lastBackup: currentSettings.lastBackup,
-            offlineFolder: String(value.offlineFolder || ""),
+            offlineFolder: String(value.offlineFolder || "").trim(),
             removeLaterOnRead: !!value.removeLaterOnRead,
             rssHub: httpURL(
                 value.rssHub || defaultPersonalSettings.rssHub
@@ -259,6 +285,16 @@ export class PersonalPreferencesStore {
             )
         )
             throw new Error("部分设置数值超出支持范围，请检查输入。")
+        if (isInsideApplicationDirectory(next.backupFolder)) {
+            throw new Error(
+                "Backup folder cannot be inside the application directory."
+            )
+        }
+        if (isInsideApplicationDirectory(next.offlineFolder)) {
+            throw new Error(
+                "Offline folder cannot be inside the application directory."
+            )
+        }
         this.store.set("personal", next)
         this.changed()
         return next

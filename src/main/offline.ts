@@ -5,6 +5,11 @@ import type Database from "better-sqlite3"
 import type { OfflineTask, PersonalSettings } from "../personal-types"
 import type { SourcePreferences } from "../source-preferences"
 import { DomainQueue, httpURL } from "./domain-queue"
+import {
+    assertAllowedCrossTarget,
+    fetchWithSafeRedirects,
+    shouldIncludeCredentials,
+} from "./net-guard"
 import { renderedPage, WEB_PARTITION } from "./web-content"
 
 export function safeFilename(
@@ -34,6 +39,7 @@ export class OfflinePages {
     private captures = new Map<
         number,
         {
+            pageUrl: string
             bytes: number
             resolve: (value: { html: string; text: string }) => void
             reject: (error: Error) => void
@@ -46,18 +52,33 @@ export class OfflinePages {
         private preferences: (sid: number) => SourcePreferences,
         private updated: () => void
     ) {
+        ipcMain.removeHandler?.("offline:resource")
         ipcMain.handle("offline:resource", async (event, address: string) => {
             const capture = this.captures.get(event.sender.id)
             if (!capture || event.senderFrame !== event.sender.mainFrame)
                 return { error: "Untrusted capture request." }
             try {
-                const url = httpURL(String(address))
-                const response = await session
-                    .fromPartition(WEB_PARTITION)
-                    .fetch(url.href, {
-                        credentials: "include",
-                        signal: AbortSignal.timeout(20000),
-                    })
+                const targetUrl = httpURL(String(address))
+                const contextHref =
+                    (typeof event.sender.getURL === "function" &&
+                        event.sender.getURL()) ||
+                    capture.pageUrl
+                const contextUrl = httpURL(contextHref)
+                assertAllowedCrossTarget(contextUrl, targetUrl)
+                const includeCreds = shouldIncludeCredentials(
+                    contextUrl,
+                    targetUrl
+                )
+                const webSession = session.fromPartition(WEB_PARTITION)
+                const { response } = await fetchWithSafeRedirects(
+                    (url, init) => webSession.fetch(url, init),
+                    targetUrl.href,
+                    {
+                        credentials: includeCreds ? "include" : "omit",
+                        timeoutMs: 20000,
+                        maxRedirects: 5,
+                    }
+                )
                 if (!response.ok)
                     throw new Error(`Resource HTTP ${response.status}`)
                 const contentType =
@@ -98,6 +119,7 @@ export class OfflinePages {
                 return { error: String(error) }
             }
         })
+        ipcMain.removeAllListeners?.("offline:captured")
         ipcMain.on("offline:captured", (event, result) => {
             const capture = this.captures.get(event.sender.id)
             if (!capture || event.senderFrame !== event.sender.mainFrame) return
@@ -155,7 +177,7 @@ export class OfflinePages {
         this.cancelledSeq.clear()
     }
 
-    private async capture(contents: WebContents) {
+    private async capture(contents: WebContents, pageUrl: string) {
         return new Promise<{ html: string; text: string }>(
             (resolve, reject) => {
                 if (contents.isDestroyed()) {
@@ -178,6 +200,7 @@ export class OfflinePages {
                 const destroyed = () =>
                     fail(new Error("离线保存被中断，请点击重试。"))
                 this.captures.set(contents.id, {
+                    pageUrl,
                     bytes: 0,
                     resolve: value => {
                         cleanup()
@@ -229,7 +252,7 @@ export class OfflinePages {
                 const preload = path.join(__dirname, "offline-preload.js")
                 const page = await renderedPage(
                     validUrl,
-                    win => this.capture(win.webContents),
+                    win => this.capture(win.webContents, validUrl),
                     preload,
                     120000
                 )

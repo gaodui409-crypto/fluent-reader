@@ -6,6 +6,11 @@ import Mercury from "@jocmp/mercury-parser"
 import type Database from "better-sqlite3"
 import type { SourcePreferences } from "../source-preferences"
 import { DomainQueue, httpURL, RequestError } from "./domain-queue"
+import {
+    assertAllowedCrossTarget,
+    assertSafeTargetUrl,
+    fetchWithSafeRedirects,
+} from "./net-guard"
 import { forumBody } from "../forum"
 import type {
     ExtractionPreview,
@@ -18,6 +23,18 @@ export const WEB_PARTITION = "persist:sandbox"
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const SAFE_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]{0,120}$/
 const SAFE_HASH_HREF_PATTERN = /^#[A-Za-z][A-Za-z0-9_.:-]{0,120}$/
+const activeRenderedWindows = new Set<BrowserWindow>()
+
+export function closeAllRenderedWindows() {
+    for (const win of [...activeRenderedWindows]) {
+        activeRenderedWindows.delete(win)
+        try {
+            if (!win.isDestroyed()) win.destroy()
+        } catch {
+            // Ignore window teardown failure.
+        }
+    }
+}
 
 export function htmlText(html: string): string {
     const { document } = parseHTML(`<html><body>${html || ""}</body></html>`)
@@ -66,7 +83,13 @@ export function cleanHTML(html: string, url: string): string {
             "blockquote": ["cite"],
         },
         allowedSchemes: ["https", "http", "data"],
-        allowedSchemesByTag: { a: ["https", "http", "mailto"] },
+        allowedSchemesByTag: {
+            a: ["https", "http", "mailto"],
+            img: ["https", "http", "data"],
+            video: ["https", "http"],
+            audio: ["https", "http"],
+            source: ["https", "http"],
+        },
         transformTags: {
             "*": (tagName, attribs) => {
                 if (
@@ -96,7 +119,11 @@ export function cleanHTML(html: string, url: string): string {
     })
 }
 
-export function secureWebWindow(show = false, preload?: string) {
+export function secureWebWindow(
+    show = false,
+    preload?: string,
+    initialUrl?: URL
+) {
     const win = new BrowserWindow({
         show,
         width: 1100,
@@ -112,9 +139,11 @@ export function secureWebWindow(show = false, preload?: string) {
         },
     })
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
-    win.webContents.on("will-navigate", (event, url) => {
+    win.webContents.on("will-navigate", (event, target) => {
         try {
-            httpURL(url)
+            const nextUrl = httpURL(target)
+            if (initialUrl) assertAllowedCrossTarget(initialUrl, nextUrl)
+            else assertSafeTargetUrl(nextUrl)
         } catch {
             event.preventDefault()
         }
@@ -128,15 +157,19 @@ export async function renderedPage<T>(
     preload?: string,
     timeoutMs = 60000
 ): Promise<T> {
-    httpURL(url)
-    const win = secureWebWindow(false, preload)
+    const parsedUrl = httpURL(url)
+    assertSafeTargetUrl(parsedUrl)
+    const win = secureWebWindow(false, preload, parsedUrl)
+    activeRenderedWindows.add(win)
     let responseCode = 200
+    let timedOut = false
     win.webContents.on("did-navigate", (_, __, status) => {
         responseCode = status
     })
     const requests = new Set<string>()
     let lastActivity = Date.now()
     const timeout = setTimeout(() => {
+        timedOut = true
         if (!win.isDestroyed()) win.destroy()
     }, timeoutMs)
     try {
@@ -156,7 +189,7 @@ export async function renderedPage<T>(
         })
         // A newly created hidden window has no renderer target until navigation
         // starts. Waiting for Network.enable first can deadlock that first load.
-        const loading = win.loadURL(url)
+        const loading = win.loadURL(parsedUrl.href)
         await Promise.all([
             loading,
             win.webContents.debugger.sendCommand("Network.enable"),
@@ -168,12 +201,16 @@ export async function renderedPage<T>(
             Date.now() < deadline
         )
             await wait(150)
-        clearTimeout(timeout)
-        if (win.isDestroyed() || win.webContents.isDestroyed())
-            throw new Error("页面加载超时。")
+        if (timedOut || win.isDestroyed() || win.webContents.isDestroyed())
+            throw new Error("Rendered page timed out.")
+        // Keep timeout armed across consume(win) so hung page JS cannot leak windows.
         return await consume(win)
+    } catch (err) {
+        if (timedOut) throw new Error("Rendered page timed out.")
+        throw err
     } finally {
         clearTimeout(timeout)
+        activeRenderedWindows.delete(win)
         if (!win.isDestroyed()) win.destroy()
     }
 }
@@ -332,18 +369,24 @@ export class FullText {
         private updated?: () => void
     ) {}
 
-    private async fetchDirectHTML(href: string): Promise<string> {
+    private async fetchDirectHTML(
+        href: string
+    ): Promise<{ raw: string; finalUrl: string }> {
         const doFetch =
             session && typeof session.fromPartition === "function"
                 ? (url: string, init: RequestInit) =>
                       session.fromPartition(WEB_PARTITION).fetch(url, init)
                 : globalThis.fetch
-        return responseHTML(
-            await doFetch(href, {
+        const { response, finalUrl } = await fetchWithSafeRedirects(
+            doFetch,
+            href,
+            {
                 credentials: "include",
-                signal: AbortSignal.timeout(30000),
-            })
+                timeoutMs: 30000,
+                maxRedirects: 8,
+            }
         )
+        return { raw: await responseHTML(response), finalUrl }
     }
 
     async preview(
@@ -384,16 +427,21 @@ export class FullText {
         }
 
         return this.queue.add(url.href, "previewExtraction", async () => {
-            const raw =
-                effectiveRule.mode === "rendered"
-                    ? await renderedPage(url.href, win =>
-                          win.webContents.executeJavaScript(
-                              "document.documentElement.outerHTML"
-                          )
-                      )
-                    : await this.fetchDirectHTML(url.href)
+            let raw: string
+            let resolvedUrl = url.href
+            if (effectiveRule.mode === "rendered") {
+                raw = await renderedPage(url.href, win =>
+                    win.webContents.executeJavaScript(
+                        "document.documentElement.outerHTML"
+                    )
+                )
+            } else {
+                const fetched = await this.fetchDirectHTML(url.href)
+                raw = fetched.raw
+                resolvedUrl = fetched.finalUrl
+            }
             const title = extractDocumentTitle(raw, url.hostname)
-            const html = await extractArticle(raw, url.href, effectiveRule)
+            const html = await extractArticle(raw, resolvedUrl, effectiveRule)
             return {
                 title,
                 html,
@@ -439,14 +487,20 @@ export class FullText {
         const promise = this.queue.add(url.href, "fullText", async () => {
             const rendered =
                 (mode || rule?.mode || preferences?.fetchMode) === "rendered"
-            const raw = rendered
-                ? await renderedPage(url.href, win =>
-                      win.webContents.executeJavaScript(
-                          "document.documentElement.outerHTML"
-                      )
-                  )
-                : await this.fetchDirectHTML(url.href)
-            const html = await extractArticle(raw, url.href, rule)
+            let raw: string
+            let resolvedUrl = url.href
+            if (rendered) {
+                raw = await renderedPage(url.href, win =>
+                    win.webContents.executeJavaScript(
+                        "document.documentElement.outerHTML"
+                    )
+                )
+            } else {
+                const fetched = await this.fetchDirectHTML(url.href)
+                raw = fetched.raw
+                resolvedUrl = fetched.finalUrl
+            }
+            const html = await extractArticle(raw, resolvedUrl, rule)
             const fetchedAt = Date.now()
             if (
                 this.sqlite.prepare("SELECT 1 FROM items WHERE _id=?").get(id)

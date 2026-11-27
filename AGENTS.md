@@ -4,7 +4,7 @@
 
 Fluent Reader Personal is a **customized desktop RSS & knowledge-archive reader** built with **Electron + React 19 + Redux + TypeScript**. It targets Windows (primary Personal edition), macOS, and Linux. The UI combines **Fluent UI v8 (`@fluentui/react`)** and **Fluent UI v9 (`@fluentui/react-components` + `@griffel/react`)** under a unified light/dark theme synchronization layer in `src/components/root.tsx`.
 
-Article, folder, note, activity, full-text, offline, and AI cache data are stored in a local **SQLite** database (`better-sqlite3` in WAL mode in the main process, accessed from the renderer via **drizzle-orm** `sqlite-proxy` `db:execute` and `db:batch`, plus typed `personal:*` IPC handlers). Settings are persisted with **electron-store** (API keys encrypted via Electron `safeStorage`). Full-text extraction uses **@mozilla/readability** + forum floor extraction, offline archiving uses **single-file-core**, and AI summary/translation/daily briefings support any **OpenAI-compatible chat endpoint**.
+Article, folder, note, activity, full-text, offline, and AI cache data are stored in a local **SQLite** database (`better-sqlite3` in WAL mode in the main process, accessed from the renderer via **drizzle-orm** `sqlite-proxy` `db:execute` and `db:batch`, plus typed `personal:*` IPC handlers). Settings are persisted with **electron-store** (API keys encrypted via Electron `safeStorage`). Full-text extraction uses **@jocmp/mercury-parser** + **@mozilla/readability** + forum floor extraction, offline archiving uses **single-file-core**, and AI summary/translation/daily briefings support any **OpenAI-compatible chat endpoint**.
 
 Formatting is handled by **Prettier** (`.prettierrc.yml`).
 
@@ -18,7 +18,7 @@ Always run commands from the repository root.
 npm install
 ```
 
-Run this **before every build**. The lockfile (`package-lock.json`) is gitignored (`.lock` in `.gitignore`), so `npm install` resolves from `package.json` each time.
+Run this **before every build** so local `node_modules` stays synchronized with the tracked `package-lock.json` (which is also distributed in the corresponding source archive).
 
 ### Build (compile TypeScript via Webpack)
 
@@ -49,10 +49,11 @@ npm run electron
 npm run start
 ```
 
-### Format check & auto-format (Prettier)
+### Format check, typecheck & auto-format
 
 ```bash
 npx prettier --check .
+npm run typecheck
 npm run format
 ```
 
@@ -68,7 +69,7 @@ Maintainer validation scripts (unit + Playwright Electron smoke suites) live in 
 
 ### Packaging
 
-- Personal Windows build (NSIS + portable zip): `npm run package-personal` (or `npm run package-win-ci`)
+- Personal Windows build (build + source archive + NSIS + portable zip): `npm run package-personal` (or `npm run package-win-ci` when `dist/` is already built)
 - Standard Windows / macOS / Linux: `npm run package-win`, `npm run package-mac`, `npm run package-linux`, `npm run package-mas`
 
 ## Project Layout
@@ -76,7 +77,7 @@ Maintainer validation scripts (unit + Playwright Electron smoke suites) live in 
 ### Root & Shared Schema Files
 | Path | Purpose |
 |---|---|
-| `package.json` | Dependencies, scripts (`build`, `format`, `test:unit`, `package-personal`), metadata |
+| `package.json` | Dependencies, scripts (`build`, `format`, `typecheck`, `test:unit`, `package-personal`), metadata |
 | `webpack.config.js` | Three webpack configs: main (`electron` + `archive-worker`), preload (`preload` + `offline-preload`), renderer (`index`) |
 | `electron-builder-personal.yml` | Personal edition Windows packaging config |
 | `src/schema-types.ts` | Core enums/types (`ViewType`, `ThemeSettings`, `StoredRule`, responsive layout constants) |
@@ -90,20 +91,22 @@ Maintainer validation scripts (unit + Playwright Electron smoke suites) live in 
 | Path | Description |
 |---|---|
 | `window.ts` | Main `BrowserWindow` lifecycle, responsive default sizing, webview navigation & shortcut forwarding |
-| `settings.ts` | `electron-store` persistence & IPC handlers (theme, locale, rules, groups, reading preferences) |
-| `db.ts` | SQLite initialization (WAL mode), migrations, `html_text` UDF, FTS5 triggers/indexes, `db:execute` & `db:batch` IPC |
+| `settings.ts` | Lazy `electron-store` initialization, corrupt-config recovery & IPC handlers |
+| `db.ts` & `sqlite-runtime.ts` | SQLite initialization (WAL mode, `trusted_schema = OFF`), migrations, `html_text` & ReDoS-safe regex UDFs, FTS5 triggers/indexes, `db:execute` & `db:batch` IPC |
+| `ipc-guard.ts` & `net-guard.ts` | Main-window `mainFrame` IPC verification and PNA/SSRF + schemeful same-site credential stripping for redirects & subresources |
 | `personal.ts` | Central `initPersonal` coordinator registering `personal:*` IPC handlers |
-| `personal-preferences.ts` | Personal settings, source/group preference overrides, legacy topic-to-folder reading preference migration |
-| `personal-accounts.ts` | Persistent `persist:sandbox` web login window, cookie inspection/clearing, permission lockdown |
+| `personal-preferences.ts` | Personal settings, install-directory path guard, source/group preference overrides, legacy reading preference migration |
+| `personal-accounts.ts` | Persistent `persist:sandbox` web login window, parent/subdomain cookie clearing, permission lockdown |
+| `service-secrets.ts` | `safeStorage` encryption/decryption for external RSS sync service credentials |
 | `error-messages.ts` | Localized human-readable error translator for network, HTTP, AI, offline, and restore failures |
 | `domain-queue.ts` | Per-domain rate-limited task queue with `429 Retry-After` backoff and bounded task history |
 | `subscriptions.ts` | Feed discovery, redirect resolution, fetch health tracking, and `article_activity` open stats |
-| `web-content.ts` | Authenticated direct & hidden-window rendered full-text extraction (`Readability` + forum floor extractor) |
+| `web-content.ts` | Authenticated direct & hidden-window rendered full-text extraction (`Mercury` + `Readability` + forum floor extractor) |
 | `linuxdo.ts` | Discourse / Linux.do public & authenticated category/tag feeds and hourly ranking feed |
-| `offline.ts` | SingleFile authenticated offline HTML capture, collision-safe filenames, rollback cleanup, local open/delete |
+| `offline.ts` | SingleFile authenticated offline HTML capture, same-site subresource credential isolation, collision-safe filenames, rollback cleanup |
 | `search-index.ts` | Background FTS5 trigram indexer (`article_fts`) and hybrid `<3` / `>=3` character search |
-| `backup.ts` & `restore.ts` | Scheduled/manual ZIP backup (with failure backoff) and integrity-checked staged startup restore |
-| `ai.ts`, `ai-client.ts`, `ai-briefing.ts` | Encrypted OpenAI-compatible client, chunked full-text translation, summary & title cache, daily briefings |
+| `backup.ts`, `restore.ts`, `library-backup.ts` | Scheduled/manual ZIP backup, transient-lock-resilient staged startup restore, and `.frdata` portable library backup |
+| `ai.ts`, `ai-client.ts`, `ai-briefing.ts` | Encrypted multi-profile OpenAI-compatible client, dual-model routing, code-block-safe bilingual translation, summary/title cache, daily briefings |
 | `archive.ts`, `archive-worker.ts`, `archive-matcher.ts`, `archive-folders.ts`, `archive-notes.ts`, `archive-batches.ts` | Whole-library filter & archive engine, warm ReDoS-bounded regex worker, 2-level folders, optimistic-locked notes, and undoable batches |
 
 ### `src/components/` — Modular Renderer UI
@@ -121,7 +124,7 @@ Maintainer validation scripts (unit + Playwright Electron smoke suites) live in 
 
 ### Important Static Asset Note: `dist/article/`
 
-`dist/article/article.html` enforces strict Content Security Policy and Subresource Integrity (`sha256-...`) for `dist/article/article.js`. Whenever `dist/article/article.js` is modified, recompute its SHA-256 base64 hash and update **both** `<meta http-equiv="Content-Security-Policy">` and `<script integrity="...">` in `dist/article/article.html`:
+`dist/article/article.html` enforces strict Content Security Policy and Subresource Integrity (`sha256-...`) for `dist/article/article.js`. Whenever `dist/article/article.js` is modified, recompute its SHA-256 base64 hash and update **both** `<meta http-equiv="Content-Security-Policy">` and `<script integrity="...">` in `dist/article/article.html` (validated automatically by `npm run test:unit` and `build/prepare-personal.cjs`):
 
 ```bash
 node -e "console.log('sha256-'+require('crypto').createHash('sha256').update(require('fs').readFileSync('dist/article/article.js')).digest('base64'))"

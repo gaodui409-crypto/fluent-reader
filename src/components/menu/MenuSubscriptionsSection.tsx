@@ -11,7 +11,8 @@ import {
 import { Filter12Filled } from "@fluentui/react-icons"
 import { StackShim } from "@fluentui/react-migration-v8-v9"
 import { SourceGroup } from "../../schema-types"
-import { toggleSettings } from "../../scripts/models/app"
+import { setMenuOpen, toggleSettings } from "../../scripts/models/app"
+import { getWindowBreakpoint } from "../../scripts/utils"
 import { useAppDispatch } from "../../scripts/reducer"
 import { RSSSource, SourceState } from "../../scripts/models/source"
 import { MenuTreeItem, SafeFavicon } from "./MenuTreeItem"
@@ -148,7 +149,11 @@ export const MenuSubscriptionsSection: React.FC<{
                         className={c.addBtn}
                         title="添加或管理订阅源"
                         aria-label="添加或管理订阅源"
-                        onClick={() => dispatch(toggleSettings(true))}>
+                        onClick={() => {
+                            if (!getWindowBreakpoint())
+                                dispatch(setMenuOpen(false))
+                            dispatch(toggleSettings(true))
+                        }}>
                         <Icon iconName="Add" style={{ fontSize: 12 }} />
                     </button>
                 </span>

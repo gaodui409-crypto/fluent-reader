@@ -141,8 +141,19 @@ body.linux {
     background-color: var(--neutralLight);
     color: var(--neutralDark);
 }
-.ms-Button--commandBar.active .ms-Button-icon {
-    color: var(--primary);
+.ms-Button--commandBar.active .ms-Button-icon,
+.ms-Button--commandBar.active i.ms-Icon,
+.ms-Button--commandBar.active [class*="aaTextIcon"] {
+    color: var(--primary) !important;
+}
+.ms-Modal,
+.ms-Dialog-main,
+.fui-DialogSurface,
+.fui-DialogBackdrop,
+.ms-Callout,
+.fui-PopoverSurface,
+.fui-MenuPopover {
+    -webkit-app-region: no-drag;
 }
 .ms-ActivityItem-activityTypeIcon,
 .ms-ActivityItem-timeStamp {

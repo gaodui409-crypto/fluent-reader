@@ -82,6 +82,7 @@ const useClasses = makeStyles({
         lineHeight: "var(--navHeight)",
         zIndex: 1,
         position: "relative",
+        WebkitAppRegion: "no-drag",
     },
     navBtnSystem: {
         position: "relative",
@@ -382,12 +383,13 @@ const Nav: React.FC = () => {
                     classes.navContent,
                     articleOverlayOpen && classes.navContentBlurred
                 )}>
-                {(!isWideScreen || !menuOn) && isNonNavButtonShown && (
+                {!menuOn && isNonNavButtonShown && (
                     <FlatButtonGroup styleClass={firstGroupClass}>
                         <FlatButton
                             styleClass={classes.navBtn}
                             title={`${intl.get("nav.menu")} (F1)`}
                             ariaLabel={intl.get("nav.menu")}
+                            id="nav-menu-toggle-btn"
                             onClick={menu}>
                             <Icon
                                 iconName={

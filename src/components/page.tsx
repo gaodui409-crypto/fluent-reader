@@ -52,10 +52,12 @@ const usePageClasses = makeStyles({
         position: "fixed",
         zIndex: 6,
         inset: 0,
+        WebkitAppRegion: "no-drag",
     },
     articleScrim: {
         position: "absolute",
         inset: 0,
+        WebkitAppRegion: "no-drag",
         zIndex: -1,
         pointerEvents: "none",
         backgroundColor: "#0008",
@@ -69,9 +71,10 @@ const usePageClasses = makeStyles({
     },
     articleWrapper: {
         position: "relative",
-        margin: "32px auto 0",
+        margin: "var(--navHeight) auto 0",
         width: "var(--article-overlay-width)",
-        height: "calc(100% - 50px)",
+        height: "calc(100% - var(--navHeight) - 18px)",
+        WebkitAppRegion: "no-drag",
         backgroundColor: "var(--white)",
         boxShadow:
             "0 8px 24px 0 rgba(0, 0, 0, 0.16), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.11)",
@@ -86,7 +89,7 @@ const usePageClasses = makeStyles({
         animationFillMode: "backwards",
     },
     resizeHandle: {
-        top: "32px",
+        top: "var(--navHeight)",
         bottom: "18px",
     },
     resizeHandleLeft: {

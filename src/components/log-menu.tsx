@@ -96,7 +96,9 @@ function LogMenu() {
                                         iconName={getLogIcon(l)}
                                         style={
                                             l.type === AppLogType.Failure
-                                                ? { color: "#d13438" }
+                                                ? {
+                                                      color: "var(--colorPaletteRedForeground1, #d13438)",
+                                                  }
                                                 : undefined
                                         }
                                     />

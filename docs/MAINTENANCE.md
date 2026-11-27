@@ -1,6 +1,6 @@
 # Fluent Reader Personal 维护入口
 
-2026-11-16，按用户要求从中转区转入持续维护。当前交付版本为 1.3.2-personal.6。
+2026-11-16，按用户要求从中转区转入持续维护。当前交付版本为 1.3.2-personal.8。
 
 ## 目录与启动
 
@@ -8,16 +8,16 @@
 |---|---|
 | 唯一源码主目录 | `D:/8.Project/0_0_维护/fluent-reader` |
 | 配套验收、独立测试资料与恢复备份 | `../fluent-reader-validation` |
-| 当前便携程序 | `bin/personal.6/win-unpacked/Fluent Reader Personal.exe` |
-| 安装包与便携 ZIP | `bin/personal.6` |
+| 当前便携程序 | `bin/personal.8/win-unpacked/Fluent Reader Personal.exe` |
+| 安装包与便携 ZIP | `bin/personal.8` |
 | 日常阅读库 | `%APPDATA%/Fluent Reader Personal`，保留在原处 |
 | 使用说明 | [USER_GUIDE.md](USER_GUIDE.md) |
 | 版本记录 | [CHANGELOG.md](CHANGELOG.md) |
 | 最近验收与待办 | [维护接续](../../fluent-reader-validation/MAINTENANCE-STATUS.md) |
 
-开始维护先读根目录 AGENTS.md；保持现有未提交改动，不重置、合并或发布。构建前按项目要求 npm install，再完成 build 与格式检查。无代码变化的目录迁移不重新打包。
+开始维护先读根目录 AGENTS.md。构建前按项目要求运行 `npm install`，再完成 `npm run build`、`npx prettier --check .` 与 `npm run test:unit` 校验。
 
-真实阅读资料与独立测试资料分开。验收目录的 local-library-backups 含用户本地库的恢复副本，不是测试垃圾。运行会重写数据库、安装目录或用户设置的历史修复脚本前，重新核对范围。
+真实阅读资料与独立测试资料分开。验收目录的 `local-library-backups` 含用户本地库的恢复副本，不是测试垃圾。运行会重写数据库、安装目录或用户设置的历史修复脚本前，重新核对范围。
 
 ## 迁移说明
 

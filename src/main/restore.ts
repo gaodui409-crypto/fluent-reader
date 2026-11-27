@@ -42,6 +42,31 @@ export function sha256(data: Buffer | string) {
     return createHash("sha256").update(data).digest("hex")
 }
 
+const TRANSIENT_LOCK_CODES = new Set(["EBUSY", "EPERM", "EACCES"])
+const sab = new SharedArrayBuffer(4)
+const sleepArr = new Int32Array(sab)
+
+function sleepSync(ms: number) {
+    Atomics.wait(sleepArr, 0, 0, ms)
+}
+
+function withTransientRetry<T>(fn: () => T, attempts = 8, delayMs = 80): T {
+    let lastError: unknown
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return fn()
+        } catch (err) {
+            lastError = err
+            const code = (err as NodeJS.ErrnoException)?.code || ""
+            if (!TRANSIENT_LOCK_CODES.has(code) || i === attempts - 1) {
+                throw err
+            }
+            sleepSync(delayMs)
+        }
+    }
+    throw lastError
+}
+
 /** Runs before electron-store/SQLite open files. The staged archive was verified
  * before relaunch; verify again and keep the previous pair for rollback. */
 export function applyPendingRestore(root: string) {
@@ -52,7 +77,12 @@ export function applyPendingRestore(root: string) {
     const retirePending = () => {
         try {
             if (fs.existsSync(marker)) fs.unlinkSync(marker)
-            fs.rmSync(pending, { recursive: true, force: true })
+            fs.rmSync(pending, {
+                recursive: true,
+                force: true,
+                maxRetries: 5,
+                retryDelay: 50,
+            })
         } catch {
             // Non-fatal if OS still releases directory handles.
         }
@@ -93,8 +123,11 @@ export function applyPendingRestore(root: string) {
         for (const name of rollbackNames) {
             const dest = path.join(root, name)
             const saved = path.join(rollback, name)
-            if (fs.existsSync(dest)) fs.copyFileSync(dest, saved)
-            else if (fs.existsSync(saved)) fs.unlinkSync(saved)
+            if (fs.existsSync(dest)) {
+                withTransientRetry(() => fs.copyFileSync(dest, saved))
+            } else if (fs.existsSync(saved)) {
+                withTransientRetry(() => fs.unlinkSync(saved))
+            }
         }
         fs.writeFileSync(started, "1")
     }
@@ -102,17 +135,33 @@ export function applyPendingRestore(root: string) {
     try {
         for (const suffix of ["-wal", "-shm"]) {
             const sidecar = path.join(root, "fluent-reader.db" + suffix)
-            if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar)
+            if (fs.existsSync(sidecar)) {
+                withTransientRetry(() => fs.unlinkSync(sidecar))
+            }
         }
-        for (const name of names)
-            fs.copyFileSync(path.join(pending, name), path.join(root, name))
-        if (offline.length) {
-            const db = new SQLite(path.join(root, "fluent-reader.db"))
-            try {
+        for (const name of names) {
+            withTransientRetry(() =>
+                fs.copyFileSync(path.join(pending, name), path.join(root, name))
+            )
+        }
+        const db = new SQLite(path.join(root, "fluent-reader.db"))
+        try {
+            const hasArticleContent = Boolean(
+                db
+                    .prepare(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='article_content'"
+                    )
+                    .get()
+            )
+            if (offline.length > 0 || hasArticleContent) {
+                const clearStale = db.prepare(
+                    "UPDATE article_content SET offlinePath='' WHERE offlinePath<>''"
+                )
                 const update = db.prepare(
                     "UPDATE article_content SET offlinePath=? WHERE itemId=?"
                 )
                 db.transaction(() => {
+                    clearStale.run()
                     for (const file of offline) {
                         const destination = path.join(
                             offlineRoot,
@@ -132,9 +181,9 @@ export function applyPendingRestore(root: string) {
                             )
                     }
                 })()
-            } finally {
-                db.close()
             }
+        } finally {
+            db.close()
         }
         retirePending()
     } catch (error) {
@@ -149,9 +198,11 @@ export function applyPendingRestore(root: string) {
         for (const name of rollbackNames) {
             const saved = path.join(rollback, name)
             if (fs.existsSync(saved))
-                fs.copyFileSync(saved, path.join(root, name))
+                withTransientRetry(() =>
+                    fs.copyFileSync(saved, path.join(root, name))
+                )
             else if (fs.existsSync(path.join(root, name)))
-                fs.unlinkSync(path.join(root, name))
+                withTransientRetry(() => fs.unlinkSync(path.join(root, name)))
         }
         // Retire the failed staged restore after rollback succeeds so subsequent
         // app launches never overwrite new user data with a stale before-restore.

@@ -46,7 +46,21 @@ function createTestDb() {
     migrate(drizzle(sqlite), {
         migrationsFolder: path.join(appRoot, "dist/drizzle"),
     })
+    const {
+        ensureRuntimeSchemaIndexes,
+        registerSafeRegexFunctions,
+    } = require(path.join(appRoot, "src/main/sqlite-runtime.ts"))
+    registerSafeRegexFunctions(sqlite)
+    ensureRuntimeSchemaIndexes(sqlite)
     return sqlite
+}
+
+async function waitForSearchIndex(idx, timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs
+    while (idx.progress.running && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 10))
+    }
+    assert.equal(idx.progress.running, false, "SearchIndex timed out")
 }
 
 function makeStore(initial = {}) {
@@ -101,6 +115,13 @@ function withMockElectron(fn) {
                 },
                 ipcMain: {
                     handle: (name, handler) => ipcHandlers.set(name, handler),
+                    handleOnce: (name, handler) =>
+                        ipcHandlers.set(name, async (...a) => {
+                            ipcHandlers.delete(name)
+                            return handler(...a)
+                        }),
+                    removeHandler: name => ipcHandlers.delete(name),
+                    removeAllListeners: name => ipcSyncHandlers.delete(name),
                     on: (name, handler) => ipcSyncHandlers.set(name, handler),
                 },
                 ipcRenderer: {
@@ -135,6 +156,9 @@ function withMockElectron(fn) {
         .then(fn)
         .finally(() => {
             Module._load = origLoad
+            ipcHandlers.clear()
+            ipcSyncHandlers.clear()
+            notices.length = 0
         })
 }
 
@@ -675,7 +699,7 @@ async function main() {
             .run()
         const idx = new SearchIndex(sqlite)
         idx.start(true)
-        await new Promise(r => setTimeout(r, 80))
+        await waitForSearchIndex(idx)
         assert.equal(idx.search("AI")[0].date, 1700000123000)
         assert.equal(idx.search("中文检索")[0].date, 1700000123000)
         idx.stop()
@@ -1647,7 +1671,7 @@ async function main() {
             )
             const index = new SearchIndex(sqlite)
             index.start(true)
-            await new Promise(resolve => setTimeout(resolve, 40))
+            await waitForSearchIndex(index)
             index.stop()
             assert.equal(index.progress.error, undefined)
             const bodyQuery = {
@@ -1897,6 +1921,721 @@ async function main() {
         }
         passed.push(
             "Rule editor roundtrip: actual React hook preserves structured/legacy queries and explicit false actions"
+        )
+    }
+
+    {
+        const crypto = require("node:crypto")
+        const vm = require("node:vm")
+        const jsPath = path.join(appRoot, "dist/article/article.js")
+        const htmlPath = path.join(appRoot, "dist/article/article.html")
+        const jsBuf = fs.readFileSync(jsPath)
+        const htmlBuf = fs.readFileSync(htmlPath)
+        assert.equal(jsBuf.includes(13), false, "article.js must stay LF")
+        assert.equal(htmlBuf.includes(13), false, "article.html must stay LF")
+        const expectedHash =
+            "sha256-" +
+            crypto.createHash("sha256").update(jsBuf).digest("base64")
+        const htmlText = htmlBuf.toString("utf8")
+        assert.ok(
+            htmlText.includes(`script-src-elem '${expectedHash}'`),
+            "CSP script-src-elem must match article.js SHA-256"
+        )
+        assert.ok(
+            htmlText.includes(`integrity="${expectedHash}"`),
+            "script integrity must match article.js SHA-256"
+        )
+
+        const dom = parseHTML(htmlText)
+        dom.window.requestAnimationFrame = fn => {
+            fn()
+            return 1
+        }
+        dom.window.getComputedStyle = () => ({ getPropertyValue: () => "" })
+        dom.window.CSS = { supports: () => false }
+        dom.window.scrollTo = () => {}
+        if (!dom.document.adoptNode) {
+            dom.document.adoptNode = node => dom.document.importNode(node, true)
+        }
+        if (!dom.window.navigator) dom.window.navigator = {}
+        dom.window.navigator.clipboard = { writeText: async () => {} }
+        const ctx = vm.createContext({
+            window: dom.window,
+            document: dom.document,
+            Element: dom.window.Element,
+            HTMLElement: dom.window.HTMLElement || dom.window.Element,
+            HTMLDialogElement:
+                dom.window.HTMLDialogElement || function HTMLDialogElement() {},
+            Event: dom.window.Event,
+            CustomEvent: dom.window.CustomEvent,
+            location: { search: "", href: "file:///article.html" },
+            Node: dom.window.Node,
+            DOMParser: class {
+                parseFromString(str) {
+                    return parseHTML(
+                        "<!doctype html><html><body>" +
+                            String(str || "") +
+                            "</body></html>"
+                    ).document
+                }
+            },
+            URL,
+            URLSearchParams,
+            navigator: dom.window.navigator,
+            CSS: dom.window.CSS,
+            getComputedStyle: dom.window.getComputedStyle,
+            requestAnimationFrame: dom.window.requestAnimationFrame,
+            setTimeout,
+            clearTimeout,
+            Math,
+            Number,
+            String,
+            Array,
+            Object,
+            Set,
+            WeakMap,
+            Date,
+            RegExp,
+            parseInt,
+            parseFloat,
+            isNaN,
+        })
+        vm.runInContext(jsBuf.toString("utf8"), ctx, { filename: jsPath })
+
+        dom.window.__renderArticle({
+            epoch: 7,
+            title: "Sanitizer Check",
+            dateText: "2026-11-27",
+            url: "https://linux.do/t/topic/42",
+            html: '<p class="lightbox-btn code-header keep-class">Safe text</p><iframe src="https://player.example.com/embed/9" title="Demo Video"></iframe><iframe src="javascript:alert(1)"></iframe><video src="data:text/html,boom"></video><img src="data:image/png;base64,iVBORw0KGgo=" alt="inline" />',
+        })
+        assert.equal(dom.document.querySelectorAll("iframe").length, 0)
+        const downgradedLink = dom.document.querySelector(
+            'a[href="https://player.example.com/embed/9"]'
+        )
+        assert.ok(downgradedLink, "HTTPS iframe downgraded to external link")
+        assert.match(downgradedLink.textContent, /Demo Video/)
+        const para = dom.document.querySelector("p.keep-class")
+        assert.ok(para, "non-reserved class preserved")
+        assert.equal(para.classList.contains("lightbox-btn"), false)
+        assert.equal(para.classList.contains("code-header"), false)
+        assert.equal(
+            dom.document.querySelector("video").getAttribute("src"),
+            null,
+            "non-IMG data: URL stripped"
+        )
+        assert.match(
+            dom.document.querySelector("#main article img").getAttribute("src"),
+            /^data:image\/png/
+        )
+
+        dom.window.__appendReplies(
+            [{ floor: 2, author: "StaleUser", html: "<p>Stale</p>" }],
+            6
+        )
+        assert.equal(
+            dom.document.getElementById("replies"),
+            null,
+            "stale epoch replies ignored"
+        )
+        dom.window.__appendReplies(
+            [{ floor: 2, author: "FreshUser", html: "<p>Fresh floor</p>" }],
+            7
+        )
+        assert.equal(
+            dom.document.querySelectorAll("#replies .reply-floor").length,
+            1
+        )
+        passed.push(
+            "Article reader container: LF + dual SHA-256 SRI/CSP, iframe downgrade, data: non-IMG strip, reserved class strip, reply epoch guard"
+        )
+    }
+
+    await withMockElectron(async () => {
+        const sqlite = createTestDb()
+        const { isSafeSqliteRegexPattern } = require(path.join(
+            appRoot,
+            "src/main/sqlite-runtime.ts"
+        ))
+        const { SearchIndex } = require(path.join(
+            appRoot,
+            "src/main/search-index.ts"
+        ))
+        const index = new SearchIndex(sqlite)
+        try {
+            sqlite
+                .prepare(
+                    "INSERT INTO sources (sid,url,name,lastFetched) VALUES (1,'https://example.com/rss','Ex',0)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO items (_id,source,title,link,date,fetchedDate,content,snippet) VALUES (1,1,'AlphaTitle','https://example.com/1',100,100,'<p>FeedBody</p>','FeedBody')"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO article_content (itemId,fullHtml,fullText,fullFetchedAt) VALUES (1,'<p>InitialFullBody</p>','InitialFullBody',100)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO article_notes (itemId,text,version,updatedAt) VALUES (1,'InitialNoteBody',1,100)"
+                )
+                .run()
+            index.start(true)
+            await waitForSearchIndex(index)
+
+            sqlite
+                .prepare(
+                    "UPDATE article_content SET fullText='LiveUpdatedFullBody' WHERE itemId=1"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "UPDATE article_notes SET text='LiveUpdatedNoteBody', version=2 WHERE itemId=1"
+                )
+                .run()
+            assert.equal(
+                index.search("LiveUpdatedFullBody")[0].id,
+                1,
+                "runtime trigger syncs article_content updates into article_fts"
+            )
+            assert.equal(
+                index.search("LiveUpdatedNoteBody")[0].id,
+                1,
+                "runtime trigger syncs article_notes updates into article_fts"
+            )
+            sqlite.prepare("DELETE FROM items WHERE _id=1").run()
+            assert.equal(
+                sqlite
+                    .prepare(
+                        "SELECT count(*) AS n FROM article_fts WHERE rowid=1"
+                    )
+                    .get().n,
+                0,
+                "deleting item removes row from article_fts"
+            )
+
+            assert.equal(isSafeSqliteRegexPattern("(a+)+$"), false)
+            assert.equal(
+                sqlite
+                    .prepare("SELECT ? REGEXP ? AS m")
+                    .get("a".repeat(48) + "!", "(a+)+$").m,
+                0,
+                "unsafe catastrophic pattern rejected without hanging"
+            )
+            assert.equal(
+                sqlite
+                    .prepare("SELECT 'Fluent 2026' REGEXP '\\d{4}' AS m")
+                    .get().m,
+                1
+            )
+
+            const insertItem = sqlite.prepare(
+                "INSERT INTO items (_id,source,title,link,date,fetchedDate,content,snippet) VALUES (?,1,?,?,100,100,'<p>Body</p>','Body')"
+            )
+            for (let i = 10; i < 160; i++) {
+                insertItem.run(
+                    i,
+                    `RebuildTitle_${i}`,
+                    `https://example.com/${i}`
+                )
+            }
+            index.start(false)
+            index.start(true)
+            await waitForSearchIndex(index)
+            assert.equal(
+                sqlite.prepare("SELECT count(*) AS n FROM article_fts").get().n,
+                150,
+                "start(true) mid-run completes full FTS rebuild"
+            )
+        } finally {
+            index.stop()
+            sqlite.close()
+        }
+        passed.push(
+            "Runtime SQLite safety: live FTS5 content/note/delete triggers, safe regex UDF guard, and mid-run SearchIndex full rebuild"
+        )
+    })
+
+    {
+        const sqlite = createTestDb()
+        const {
+            exportLibraryData,
+            clearLibraryData,
+            restoreLibraryData,
+        } = require(path.join(appRoot, "src/main/library-backup.ts"))
+        try {
+            sqlite
+                .prepare(
+                    "INSERT INTO sources (sid,url,name,lastFetched) VALUES (1,'https://example.com/rss','Ex',0)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO items (_id,source,title,link,date,fetchedDate,content,snippet) VALUES (1,1,'Title','https://example.com/1',100,100,'<p>x</p>','x')"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO article_folders (id,parentId,name,position) VALUES (10,NULL,'RootFolder',0)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO article_folders (id,parentId,name,position) VALUES (2,10,'ChildFolder',0)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO folder_articles (folderId,itemId,stamp) VALUES (2,1,'2026-11-27')"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO article_content (itemId,fullHtml,fullText,fullFetchedAt,offlinePath,offlineText) VALUES (1,'<p>Full</p>','Full',123,'C:\\\\Users\\\\local\\\\1.html','Offline')"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO briefings (id,createdAt,content,tokens) VALUES (1,999,'# Daily Briefing',42)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO ai_cache (key,itemId,kind,result,createdAt,tokens) VALUES ('k1',1,'summary','cached',100,10)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO ai_usage (createdAt,kind,model,input,output) VALUES (100,'summary','gpt',5,5)"
+                )
+                .run()
+            sqlite
+                .prepare(
+                    "INSERT INTO source_health (sid,failures,lastError,checkedAt,redirect) VALUES (1,2,'boom',100,'')"
+                )
+                .run()
+
+            const exported = exportLibraryData(sqlite)
+            assert.equal(exported.briefings.length, 1)
+            assert.equal(exported.article_content[0].offlinePath, "")
+
+            clearLibraryData(sqlite)
+            for (const tbl of [
+                "article_folders",
+                "folder_articles",
+                "article_content",
+                "briefings",
+                "ai_cache",
+                "ai_usage",
+                "source_health",
+            ]) {
+                assert.equal(
+                    sqlite.prepare(`SELECT count(*) AS n FROM ${tbl}`).get().n,
+                    0,
+                    `${tbl} cleared by clearLibraryData`
+                )
+            }
+
+            restoreLibraryData(sqlite, {
+                ...exported,
+                article_folders: [...exported.article_folders].sort(
+                    (a, b) => a.id - b.id
+                ),
+                article_content: [
+                    {
+                        ...exported.article_content[0],
+                        offlinePath: "D:\\\\foreign\\\\evil.html",
+                    },
+                ],
+            })
+            assert.equal(
+                sqlite.prepare("SELECT count(*) AS n FROM briefings").get().n,
+                1
+            )
+            assert.equal(
+                sqlite
+                    .prepare("SELECT count(*) AS n FROM article_folders")
+                    .get().n,
+                2,
+                "child-with-lower-id restores cleanly after parent ordering"
+            )
+            assert.equal(
+                sqlite
+                    .prepare(
+                        "SELECT offlinePath FROM article_content WHERE itemId=1"
+                    )
+                    .get().offlinePath,
+                "",
+                "portable restore clears machine-specific offlinePath"
+            )
+        } finally {
+            sqlite.close()
+        }
+        passed.push(
+            "Portable library backup: briefings round-trip, parent-before-child folder order, offlinePath sanitization, and clearLibraryData hygiene"
+        )
+    }
+
+    await withMockElectron(async () => {
+        const {
+            applyPendingRestore,
+            sha256,
+            validateOfflineEntries,
+        } = require(path.join(appRoot, "src/main/restore.ts"))
+        const { PersonalPreferencesStore } = require(path.join(
+            appRoot,
+            "src/main/personal-preferences.ts"
+        ))
+        const { defaultPersonalSettings } = require(path.join(
+            appRoot,
+            "src/personal-types.ts"
+        ))
+
+        for (const bad of [
+            [
+                {
+                    itemId: 1,
+                    entry: "offline/1.html",
+                    relative: ["..", "d", "f.html"],
+                },
+            ],
+            [
+                {
+                    itemId: 1,
+                    entry: "offline/1.html",
+                    relative: ["src", "2026-11-27", "CON.html"],
+                },
+            ],
+            [
+                {
+                    itemId: 1,
+                    entry: "offline/1.html",
+                    relative: ["src", "2026\\11", "a.html"],
+                },
+            ],
+        ]) {
+            assert.throws(() => validateOfflineEntries(bad), /Unsafe/)
+        }
+
+        const sqliteMem = createTestDb()
+        try {
+            const prefStore = new PersonalPreferencesStore(
+                sqliteMem,
+                makeStore(),
+                () => {}
+            )
+            const insideAppDir = path.join(
+                path.dirname(process.execPath),
+                "sub-backups"
+            )
+            assert.throws(
+                () =>
+                    prefStore.saveSettings({
+                        ...defaultPersonalSettings,
+                        backupFolder: insideAppDir,
+                    }),
+                /application directory/
+            )
+            assert.throws(
+                () =>
+                    prefStore.saveSettings({
+                        ...defaultPersonalSettings,
+                        offlineFolder: insideAppDir,
+                    }),
+                /application directory/
+            )
+        } finally {
+            sqliteMem.close()
+        }
+
+        const tmpRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), "fr-restore-pos-")
+        )
+        try {
+            const pendingDir = path.join(tmpRoot, "pending-restore")
+            const customOfflineDir = path.join(tmpRoot, "restored-offline")
+            fs.mkdirSync(path.join(pendingDir, "offline"), { recursive: true })
+
+            const stagedDbPath = path.join(pendingDir, "fluent-reader.db")
+            const stagedDb = new Database(stagedDbPath)
+            try {
+                stagedDb.function("html_text", html => String(html || ""))
+                migrate(drizzle(stagedDb), {
+                    migrationsFolder: path.join(appRoot, "dist/drizzle"),
+                })
+                stagedDb
+                    .prepare(
+                        "INSERT INTO sources (sid,url,name,lastFetched) VALUES (1,'https://example.com/rss','Ex',0)"
+                    )
+                    .run()
+                stagedDb
+                    .prepare(
+                        "INSERT INTO items (_id,source,title,link,date,fetchedDate,content,snippet) VALUES (1,1,'One','https://example.com/1',1,1,'a','a'),(2,1,'Two','https://example.com/2',2,2,'b','b')"
+                    )
+                    .run()
+                stagedDb
+                    .prepare(
+                        "INSERT INTO article_content (itemId,fullHtml,fullText,fullFetchedAt,offlinePath,offlineText) VALUES (1,'','a',1,'D:\\\\old\\\\1.html','a'),(2,'','b',2,'D:\\\\old\\\\missing-2.html','b')"
+                    )
+                    .run()
+            } finally {
+                stagedDb.close()
+            }
+
+            const cfgJson = JSON.stringify({
+                personal: { offlineFolder: customOfflineDir },
+            })
+            const offlineHtml = "<!doctype html><title>Saved 1</title>"
+            fs.writeFileSync(path.join(pendingDir, "config.json"), cfgJson)
+            fs.writeFileSync(
+                path.join(pendingDir, "offline/1.html"),
+                offlineHtml
+            )
+            const dbBytes = fs.readFileSync(stagedDbPath)
+            fs.writeFileSync(
+                path.join(pendingDir, "manifest.json"),
+                JSON.stringify({
+                    hashes: {
+                        "config.json": sha256(cfgJson),
+                        "fluent-reader.db": sha256(dbBytes),
+                        "offline/1.html": sha256(offlineHtml),
+                    },
+                    offline: [
+                        {
+                            itemId: 1,
+                            entry: "offline/1.html",
+                            relative: ["Ex", "2026-11-27", "One.html"],
+                        },
+                    ],
+                })
+            )
+
+            applyPendingRestore(tmpRoot)
+
+            const checkDb = new Database(path.join(tmpRoot, "fluent-reader.db"))
+            try {
+                const rows = checkDb
+                    .prepare(
+                        "SELECT itemId, offlinePath FROM article_content ORDER BY itemId"
+                    )
+                    .all()
+                assert.equal(fs.existsSync(rows[0].offlinePath), true)
+                assert.ok(
+                    rows[0].offlinePath.endsWith(
+                        path.join("Ex", "2026-11-27", "One.html")
+                    )
+                )
+                assert.equal(
+                    rows[1].offlinePath,
+                    "",
+                    "stale offlinePath missing from archive cleared to empty string"
+                )
+            } finally {
+                checkDb.close()
+            }
+        } finally {
+            fs.rmSync(tmpRoot, {
+                recursive: true,
+                force: true,
+                maxRetries: 5,
+                retryDelay: 50,
+            })
+        }
+        passed.push(
+            "Restore & path safety: offline path traversal/reserved-name block, app-dir folder block, and applyPendingRestore offlinePath rewrite + stale cleanup"
+        )
+    })
+
+    {
+        const {
+            assertSafeTargetUrl,
+            assertAllowedCrossTarget,
+            shouldIncludeCredentials,
+            fetchWithSafeRedirects,
+        } = require(path.join(appRoot, "src/main/net-guard.ts"))
+        const {
+            isTrustedMainFrame,
+            assertTrustedMainFrame,
+        } = require(path.join(appRoot, "src/main/ipc-guard.ts"))
+        const { DomainQueue, RequestError } = require(path.join(
+            appRoot,
+            "src/main/domain-queue.ts"
+        ))
+
+        assert.throws(() => assertSafeTargetUrl(new URL("http://0.0.0.0/")))
+        assert.throws(() =>
+            assertSafeTargetUrl(new URL("http://169.254.169.254/latest"))
+        )
+        assert.throws(() =>
+            assertAllowedCrossTarget(
+                new URL("https://news.example.com/post"),
+                new URL("http://127.0.0.1:8080/admin")
+            )
+        )
+        assert.throws(() =>
+            assertAllowedCrossTarget(
+                new URL("https://news.example.com/post"),
+                new URL("http://192.168.1.10/router")
+            )
+        )
+        assert.doesNotThrow(() =>
+            assertAllowedCrossTarget(
+                new URL("http://192.168.1.20/rss"),
+                new URL("http://192.168.1.30/img.png")
+            )
+        )
+        assert.throws(() =>
+            assertAllowedCrossTarget(
+                new URL("http://192.168.1.20/rss"),
+                new URL("http://127.0.0.1:11434/api")
+            )
+        )
+
+        assert.equal(
+            shouldIncludeCredentials(
+                "https://linux.do/t/1",
+                "https://cdn.linux.do/a.png"
+            ),
+            true
+        )
+        assert.equal(
+            shouldIncludeCredentials(
+                "https://linux.do/t/1",
+                "http://linux.do/downgrade.png"
+            ),
+            false,
+            "HTTPS -> HTTP downgrade drops credentials"
+        )
+        assert.equal(
+            shouldIncludeCredentials(
+                "https://alice.github.io/post",
+                "https://bob.github.io/pixel.png"
+            ),
+            false,
+            "shared public suffix tenants do not share credentials"
+        )
+        assert.equal(
+            shouldIncludeCredentials(
+                "https://linux.do/t/1",
+                "https://tracker.evil.example/p.png"
+            ),
+            false
+        )
+
+        const seenCalls = []
+        const res = await fetchWithSafeRedirects(
+            async (url, init) => {
+                seenCalls.push({ url, credentials: init.credentials })
+                if (seenCalls.length === 1) {
+                    return new Response("", {
+                        status: 302,
+                        headers: {
+                            location: "https://other.example.org/final",
+                        },
+                    })
+                }
+                return new Response("ok", { status: 200 })
+            },
+            "https://origin.example.com/start",
+            { credentials: "include" }
+        )
+        assert.equal(res.finalUrl, "https://other.example.org/final")
+        assert.deepEqual(seenCalls, [
+            {
+                url: "https://origin.example.com/start",
+                credentials: "include",
+            },
+            {
+                url: "https://other.example.org/final",
+                credentials: "omit",
+            },
+        ])
+        await assert.rejects(
+            fetchWithSafeRedirects(
+                async () =>
+                    new Response("", {
+                        status: 302,
+                        headers: { location: "http://127.0.0.1:9000/secret" },
+                    }),
+                "https://origin.example.com/start"
+            ),
+            /安全限制/
+        )
+
+        const mainFrame = { id: "main-frame" }
+        const mainContents = {
+            mainFrame,
+            isDestroyed: () => false,
+        }
+        const manager = {
+            hasWindow: () => true,
+            mainWindow: { webContents: mainContents },
+        }
+        assert.equal(
+            isTrustedMainFrame(
+                { sender: mainContents, senderFrame: mainFrame },
+                manager
+            ),
+            true
+        )
+        assert.throws(
+            () =>
+                assertTrustedMainFrame(
+                    { sender: mainContents, senderFrame: { id: "subframe" } },
+                    manager
+                ),
+            /Untrusted IPC sender/
+        )
+        assert.throws(
+            () =>
+                assertTrustedMainFrame(
+                    { sender: { mainFrame }, senderFrame: mainFrame },
+                    manager
+                ),
+            /Untrusted IPC sender/
+        )
+
+        const queue = new DomainQueue(() => ({
+            domainInterval: 0,
+            concurrency: 4,
+        }))
+        try {
+            let activeSameHost = 0
+            let maxSameHost = 0
+            await Promise.all([
+                queue.add("https://same.example.com/1", "t1", async () => {
+                    activeSameHost++
+                    maxSameHost = Math.max(maxSameHost, activeSameHost)
+                    await new Promise(r => setTimeout(r, 25))
+                    activeSameHost--
+                }),
+                queue.add("https://same.example.com/2", "t2", async () => {
+                    activeSameHost++
+                    maxSameHost = Math.max(maxSameHost, activeSameHost)
+                    await new Promise(r => setTimeout(r, 10))
+                    activeSameHost--
+                }),
+            ])
+            assert.equal(
+                maxSameHost,
+                1,
+                "DomainQueue serializes in-flight tasks per host"
+            )
+            await assert.rejects(
+                queue.add("https://rate.example.com/1", "429", async () => {
+                    throw new RequestError(429, "1", "Too Many Requests")
+                }),
+                /Too Many Requests/
+            )
+            assert.equal(queue.summary().failed, 1)
+        } finally {
+            queue.close()
+        }
+        passed.push(
+            "Security & scheduler guards: PNA/SSRF + cross-site credential stripping, main-frame IPC sender guard, and per-host DomainQueue serialization/429"
         )
     }
 

@@ -49,7 +49,9 @@ const useStyles = makeStyles({
         "display": "flex",
         "flexDirection": "column",
         "userSelect": "none",
-        "& i.ms-Icon": { color: "var(--neutralDarker)" },
+        "& .ms-Button:not(.active) i.ms-Icon": {
+            color: "var(--neutralDarker)",
+        },
     },
     selectionCallout: {
         padding: "14px 16px",
@@ -143,6 +145,10 @@ function Article({ itemId, side = false }: ArticleProps) {
     const [findOpen, setFindOpen] = useState(false)
     const [findFocusTick, setFindFocusTick] = useState(0)
     const webviewModalOpenRef = useRef(false)
+    const selectionReqIdRef = useRef(0)
+    const selectionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null
+    )
 
     // Floating Selection AI Translation state
     const [selectionTrans, setSelectionTrans] = useState<{
@@ -162,6 +168,9 @@ function Article({ itemId, side = false }: ArticleProps) {
 
     useEffect(() => {
         setNotesOpen(false)
+        selectionReqIdRef.current += 1
+        if (selectionCopyTimerRef.current)
+            clearTimeout(selectionCopyTimerRef.current)
         setSelectionTrans(null)
     }, [itemId])
 
@@ -236,6 +245,7 @@ function Article({ itemId, side = false }: ArticleProps) {
                       left: Math.round(window.innerWidth / 2),
                       top: Math.round(window.innerHeight / 3),
                   }
+            const reqId = ++selectionReqIdRef.current
             setSelectionTrans({
                 sourceText: text,
                 translated: "",
@@ -248,14 +258,18 @@ function Article({ itemId, side = false }: ArticleProps) {
                 .aiTranslateSelection(text)
                 .then(res => {
                     setSelectionTrans(prev =>
-                        prev && prev.sourceText === text
+                        reqId === selectionReqIdRef.current &&
+                        prev &&
+                        prev.sourceText === text
                             ? { ...prev, translated: res, busy: false }
                             : prev
                     )
                 })
                 .catch(err => {
                     setSelectionTrans(prev =>
-                        prev && prev.sourceText === text
+                        reqId === selectionReqIdRef.current &&
+                        prev &&
+                        prev.sourceText === text
                             ? { ...prev, error: String(err), busy: false }
                             : prev
                     )
@@ -528,6 +542,7 @@ function Article({ itemId, side = false }: ArticleProps) {
             />
             <ArticleNotesDrawer
                 open={notesOpen}
+                onOpen={() => setNotesOpen(true)}
                 onClose={closeNotes}
                 state={notesState}
             />
@@ -593,16 +608,21 @@ function Article({ itemId, side = false }: ArticleProps) {
                                                     ? { ...prev, copied: true }
                                                     : prev
                                             )
-                                            setTimeout(() => {
-                                                setSelectionTrans(prev =>
-                                                    prev
-                                                        ? {
-                                                              ...prev,
-                                                              copied: false,
-                                                          }
-                                                        : prev
+                                            if (selectionCopyTimerRef.current)
+                                                clearTimeout(
+                                                    selectionCopyTimerRef.current
                                                 )
-                                            }, 1800)
+                                            selectionCopyTimerRef.current =
+                                                setTimeout(() => {
+                                                    setSelectionTrans(prev =>
+                                                        prev
+                                                            ? {
+                                                                  ...prev,
+                                                                  copied: false,
+                                                              }
+                                                            : prev
+                                                    )
+                                                }, 1800)
                                         }}>
                                         {selectionTrans.copied
                                             ? "已复制"
@@ -610,7 +630,15 @@ function Article({ itemId, side = false }: ArticleProps) {
                                     </DefaultButton>
                                 )}
                                 <DefaultButton
-                                    onClick={() => setSelectionTrans(null)}>
+                                    onClick={() => {
+                                        selectionReqIdRef.current += 1
+                                        selectionReqIdRef.current += 1
+                                        if (selectionCopyTimerRef.current)
+                                            clearTimeout(
+                                                selectionCopyTimerRef.current
+                                            )
+                                        setSelectionTrans(null)
+                                    }}>
                                     {intl.get("close")}
                                 </DefaultButton>
                             </span>

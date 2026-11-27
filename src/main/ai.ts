@@ -247,6 +247,21 @@ interface CachedTranslationEnvelope {
     blocks: BilingualBlock[]
 }
 
+function formatBilingualBlockMarkdown(b: BilingualBlock): string {
+    if (!b.target) return ""
+    if (!b.isCode) return b.target
+    const maxTicks = Math.max(
+        2,
+        ...(b.target.match(/`+/g) || []).map(m => m.length)
+    )
+    const fence = "`".repeat(maxTicks + 1)
+    return `${fence}\n${b.target}\n${fence}`
+}
+
+function formatBilingualBlocksText(blocks: BilingualBlock[]): string {
+    return blocks.map(formatBilingualBlockMarkdown).filter(Boolean).join("\n\n")
+}
+
 function validTranslationEnvelope(
     value: CachedTranslationEnvelope,
     raw: RawArticleBlock[]
@@ -267,7 +282,8 @@ function validTranslationEnvelope(
                     ? block.target === block.source
                     : Boolean(block.target.trim()))
         ) &&
-        value.text === value.blocks.map(b => b.target).join("\n\n") &&
+        (value.text === formatBilingualBlocksText(value.blocks) ||
+            value.text === value.blocks.map(b => b.target).join("\n\n")) &&
         value.original === raw.map(b => b.text).join("\n\n")
     )
 }
@@ -289,6 +305,7 @@ export class AI {
     private client: AIClient
     private briefingService: AIBriefingService
     private controllers = new Map<string, AbortController>()
+    private titleKeyValidity = new Map<string, boolean>()
 
     constructor(
         private db: Database.Database,
@@ -820,9 +837,12 @@ export class AI {
                         cachedEntry.result
                     ) as CachedTranslationEnvelope
                     if (validTranslationEnvelope(parsed, rawBlocks)) {
-                        emitStream(parsed.text, 0, 1, true)
+                        const normalizedText = formatBilingualBlocksText(
+                            parsed.blocks
+                        )
+                        emitStream(normalizedText, 0, 1, true)
                         return {
-                            text: parsed.text,
+                            text: normalizedText,
                             original: parsed.original,
                             blocks: parsed.blocks,
                             tokens: cachedEntry.tokens,
@@ -862,11 +882,9 @@ export class AI {
                       .map((entry, idx) => `[[[PARA_${idx}]]]\n${entry.text}`)
                       .join("\n\n")
 
-            const completedBefore = blocks
-                .slice(0, batch[0].index)
-                .map(b => b.target)
-                .filter(Boolean)
-                .join("\n\n")
+            const completedBefore = formatBilingualBlocksText(
+                blocks.slice(0, batch[0].index)
+            )
 
             let translatedList: string[]
             try {
@@ -947,10 +965,7 @@ export class AI {
         }
 
         const original = blocks.map(b => b.source).join("\n\n")
-        const text = blocks
-            .map(b => b.target)
-            .filter(Boolean)
-            .join("\n\n")
+        const text = formatBilingualBlocksText(blocks)
         const tokens = batches.length ? sumTokens(tokenParts) : 0
         const cached = batches.length ? allCached : true
 
@@ -1013,16 +1028,27 @@ export class AI {
         }
         const result: Record<number, string> = {}
         const instruction = titlePrompt(c.targetLanguage)
+        const configSig = `${c.baseURL}|${this.client.resolveModel(
+            c,
+            "title"
+        )}|${instruction}`
+        if (this.titleKeyValidity.size > 10000) this.titleKeyValidity.clear()
         for (const row of rows) {
             if (!isSourceAIEnabled(row.source)) continue
-            const expectedKey = this.client.makeCacheKey(
-                c,
-                row._id,
-                "title",
-                instruction,
-                row.title
-            )
-            if (row.key === expectedKey) {
+            const memoKey = `${configSig}\0${row._id}\0${row.key}\0${row.title}`
+            let matches = this.titleKeyValidity.get(memoKey)
+            if (matches === undefined) {
+                const expectedKey = this.client.makeCacheKey(
+                    c,
+                    row._id,
+                    "title",
+                    instruction,
+                    row.title
+                )
+                matches = row.key === expectedKey
+                this.titleKeyValidity.set(memoKey, matches)
+            }
+            if (matches) {
                 result[row._id] = row.result
             }
         }

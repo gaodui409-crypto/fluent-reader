@@ -109,6 +109,34 @@ class SourcesTab extends React.Component<SourcesTabProps, SourcesTabState> {
         })
     }
 
+    componentDidUpdate = (prevProps: SourcesTabProps) => {
+        if (prevProps.sources !== this.props.sources) {
+            if (this.state.selectedSource) {
+                const fresh = this.props.sources[this.state.selectedSource.sid]
+                if (fresh && fresh !== this.state.selectedSource) {
+                    this.setState({
+                        selectedSource: fresh,
+                        newSourceName: fresh.name,
+                        newSourceIcon: fresh.iconurl || "",
+                        newSourceUrl: fresh.url || "",
+                    })
+                } else if (!fresh) {
+                    this.setState({ selectedSource: null })
+                }
+            }
+            if (this.state.selectedSources) {
+                const freshList = this.state.selectedSources
+                    .map(s => this.props.sources[s.sid])
+                    .filter((s): s is RSSSource => Boolean(s))
+                this.setState({
+                    selectedSources: freshList.length > 1 ? freshList : null,
+                    selectedSource:
+                        freshList.length === 1 ? freshList[0] : null,
+                })
+            }
+        }
+    }
+
     componentDidMount = () => {
         if (this.props.sids.length > 0) {
             for (let sid of this.props.sids) {

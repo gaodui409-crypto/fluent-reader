@@ -2,13 +2,22 @@ extends: ./electron-builder.yml
 appId: local.fluentreader.personal
 productName: Fluent Reader Personal
 directories:
-    output: ./bin/personal.7/
+    output: ./bin/personal.8/
 electronDist: ./node_modules/electron/dist
 extraMetadata:
     name: fluent-reader-personal
     productName: Fluent Reader Personal
-    version: 1.3.2-personal.7
+    version: 1.3.2-personal.8
 artifactName: Fluent-Reader-Personal-${version}-win-${arch}.${ext}
+files:
+    - "./dist/**/*"
+    - "!./dist/fontlist"
+    - "!**/*.js.map"
+    - "!node_modules/better-sqlite3/deps/**/*"
+    - "!node_modules/better-sqlite3/src/**/*"
+    - "!node_modules/better-sqlite3/prebuilds/darwin-*.node"
+    - "!node_modules/better-sqlite3/prebuilds/linux*.node"
+    - "!node_modules/better-sqlite3/prebuilds/win32-arm64.node"
 extraFiles:
     - from: README-personal.md
       to: 使用说明.md

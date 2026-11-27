@@ -1,4 +1,16 @@
-import { session } from "electron"
+import { BrowserWindow, session } from "electron"
+import { assertSafeTargetUrl } from "./net-guard"
+const openLoginWindows = new Set<BrowserWindow>()
+export function closeAllWebLoginWindows() {
+    for (const win of [...openLoginWindows]) {
+        openLoginWindows.delete(win)
+        try {
+            if (!win.isDestroyed()) win.destroy()
+        } catch {
+            // Ignore window teardown failure.
+        }
+    }
+}
 import type { WebAccountInfo } from "../personal-types"
 import { httpURL, normalizeSiteHost } from "./domain-queue"
 import { secureWebWindow, WEB_PARTITION } from "./web-content"
@@ -127,24 +139,43 @@ export async function clearWebAccount(host: string): Promise<boolean> {
     const target = normalizeSiteHost(host)
     const web = session.fromPartition(WEB_PARTITION)
     const cookies = await web.cookies.get({})
-    for (const cookie of cookies.filter(
-        c => c.domain.replace(/^\./, "") === target
-    )) {
-        await web.cookies.remove(
-            `${cookie.secure ? "https" : "http"}://${target}${cookie.path}`,
-            cookie.name
-        )
+    const base = cleanDomain(target)
+    const originsToClear = new Set<string>([
+        `https://${target}`,
+        `http://${target}`,
+        `https://${base}`,
+        `http://${base}`,
+        `https://www.${base}`,
+        `http://www.${base}`,
+    ])
+    for (const cookie of cookies) {
+        const cookieHost = cookie.domain.replace(/^\.+/, "").toLowerCase()
+        if (domainsMatch(cookieHost, base)) {
+            await web.cookies
+                .remove(
+                    `${cookie.secure ? "https" : "http"}://${cookieHost}${
+                        cookie.path || "/"
+                    }`,
+                    cookie.name
+                )
+                .catch(() => {})
+            originsToClear.add(`https://${cookieHost}`)
+            originsToClear.add(`http://${cookieHost}`)
+        }
     }
-    for (const protocol of ["https:", "http:"])
-        await web.clearStorageData({
-            origin: `${protocol}//${target}`,
-            storages: [
-                "localstorage",
-                "indexdb",
-                "serviceworkers",
-                "cachestorage",
-            ],
-        })
+    for (const origin of originsToClear) {
+        await web
+            .clearStorageData({
+                origin,
+                storages: [
+                    "localstorage",
+                    "indexdb",
+                    "serviceworkers",
+                    "cachestorage",
+                ],
+            })
+            .catch(() => {})
+    }
     await web.cookies.flushStore()
     return true
 }
@@ -158,8 +189,11 @@ export async function openWebLoginWindow(
     const url = httpURL(
         trimmed.includes("://") ? trimmed : "https://" + trimmed
     )
+    assertSafeTargetUrl(url)
     const win = secureWebWindow(true)
+    openLoginWindows.add(win)
     win.on("closed", () => {
+        openLoginWindows.delete(win)
         void session
             .fromPartition(WEB_PARTITION)
             .cookies.flushStore()

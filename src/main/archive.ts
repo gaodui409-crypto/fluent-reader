@@ -245,6 +245,17 @@ export class ArticleArchive {
                             else if (rule.action.kind === "unstar")
                                 row.starred = 0
                             if (rule.action.kind === "folder") row.inFolder = 1
+                            else if (rule.action.kind === "remove") {
+                                row.inFolder = Number(
+                                    Boolean(
+                                        this.db
+                                            .prepare(
+                                                "SELECT 1 FROM folder_articles WHERE itemId=? LIMIT 1"
+                                            )
+                                            .get(matchedId)
+                                    )
+                                )
+                            }
                             if (rule.action.kind === "hide") row.hidden = 1
                             if (rule.action.kind === "restore") {
                                 row.hidden = 0
@@ -257,6 +268,12 @@ export class ArticleArchive {
                                 row.feedHidden = 1
                         }
                     }
+                }
+                if (rule.error) {
+                    const { error: _cleared, ...cleanRule } = rule
+                    this.db
+                        .prepare("UPDATE archive_rules SET spec=? WHERE id=?")
+                        .run(JSON.stringify(cleanRule), rule.id)
                 }
             } catch (error) {
                 this.db

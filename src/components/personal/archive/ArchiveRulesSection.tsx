@@ -65,7 +65,7 @@ const useStyles = makeStyles({
         verticalAlign: "middle",
     },
     ruleError: {
-        color: "#d13438",
+        color: "var(--colorPaletteRedForeground1, #d13438)",
         width: "100%",
         paddingInlineStart: "28px",
     },

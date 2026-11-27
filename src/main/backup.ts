@@ -33,7 +33,8 @@ export class Backups {
         private sqlite: Database.Database,
         private store: Store<SchemaTypes>,
         private settings: () => PersonalSettings,
-        private changed: () => void = () => {}
+        private changed: () => void = () => {},
+        private beforeRestart?: () => void
     ) {}
 
     async create(): Promise<string> {
@@ -67,7 +68,9 @@ export class Backups {
             }[]
             try {
                 rows = snapshot
-                    .prepare("SELECT url,name FROM sources ORDER BY sid")
+                    .prepare(
+                        "SELECT url,name FROM sources WHERE archived=0 ORDER BY sid"
+                    )
                     .all() as typeof rows
                 saved = snapshot
                     .prepare(
@@ -197,6 +200,13 @@ export class Backups {
         const configBytes = zip.readFile("config.json")
         const dbBytes = zip.readFile("fluent-reader.db")
         if (
+            !configBytes ||
+            !dbBytes ||
+            configBytes.byteLength > 64 * 1024 * 1024 ||
+            dbBytes.byteLength > 2 * 1024 * 1024 * 1024
+        )
+            throw new Error("备份压缩包核心文件体积异常。")
+        if (
             sha256(configBytes) !== manifest.hashes["config.json"] ||
             sha256(dbBytes) !== manifest.hashes["fluent-reader.db"]
         )
@@ -214,11 +224,17 @@ export class Backups {
         await fs.mkdir(pending, { recursive: true })
         try {
             const candidate = path.join(pending, "fluent-reader.db")
+            let totalOfflineBytes = 0
             for (const file of offline) {
                 const entry = zip.getEntry(file.entry)
                 if (!entry || entry.header.size > 200 * 1024 * 1024)
                     throw new Error("备份包中的离线网页文件缺失或异常。")
                 const bytes = zip.readFile(entry)
+                if (!bytes || bytes.byteLength > 200 * 1024 * 1024)
+                    throw new Error("备份包中的离线网页文件缺失或异常。")
+                totalOfflineBytes += bytes.byteLength
+                if (totalOfflineBytes > 4 * 1024 * 1024 * 1024)
+                    throw new Error("备份包解压总大小超出安全上限。")
                 if (sha256(bytes) !== manifest.hashes[file.entry])
                     throw new Error(
                         "备份包内的离线网页校验未通过（checksum mismatch），已取消恢复以保护现有数据。"
@@ -265,6 +281,16 @@ export class Backups {
                 path.join(pending, "manifest.json"),
                 JSON.stringify(manifest)
             )
+            try {
+                this.beforeRestart?.()
+            } catch {
+                // Continue shutdown even if a cleanup hook already closed resources.
+            }
+            try {
+                if (this.sqlite.open) this.sqlite.close()
+            } catch {
+                // Best-effort handle release before relaunch on Windows.
+            }
             app.relaunch()
             app.exit(0)
             return true

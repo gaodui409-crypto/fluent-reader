@@ -125,7 +125,7 @@ const useStyles = makeStyles({
         fontSize: "12.5px",
     },
     repliesError: {
-        color: "#d13438",
+        color: "var(--colorPaletteRedForeground1, #d13438)",
         fontSize: "12px",
     },
     errorWrap: {
@@ -279,6 +279,8 @@ export const ArticleReaderSurface: React.FC<{
         null
     )
     const [repliesError, setRepliesError] = useState("")
+    const repliesFloorsRef = useRef<ForumFloor[] | null>(null)
+    repliesFloorsRef.current = repliesFloors
 
     const isLinuxDoTopic =
         /^https:\/\/linux\.do\/t\//i.test(item.link) && !loadWebpage
@@ -287,6 +289,16 @@ export const ArticleReaderSurface: React.FC<{
         hour12: !locale.startsWith("zh"),
     })
     const articleHtml = loadFull ? fullContent || item.content : item.content
+
+    const renderEpochRef = useRef(0)
+    const prevRenderKeyRef = useRef("")
+    const renderKey = `${item._id}|${Number(loadWebpage)}|${Number(loadFull)}|${
+        articleHtml?.length ?? 0
+    }`
+    if (prevRenderKeyRef.current !== renderKey) {
+        prevRenderKeyRef.current = renderKey
+        renderEpochRef.current += 1
+    }
 
     const latestPayloadRef = useRef({
         title: item.title,
@@ -300,6 +312,7 @@ export const ArticleReaderSurface: React.FC<{
         dir: source.textDir,
         locale,
         dark,
+        epoch: renderEpochRef.current,
     })
     latestPayloadRef.current = {
         title: item.title,
@@ -313,7 +326,23 @@ export const ArticleReaderSurface: React.FC<{
         dir: source.textDir,
         locale,
         dark,
+        epoch: renderEpochRef.current,
     }
+
+    const mountArticleInWebview = useCallback((node: Electron.WebviewTag) => {
+        const payload = latestPayloadRef.current
+        const floors = repliesFloorsRef.current
+        const script = floors
+            ? `window.__renderArticle && window.__renderArticle(${safeJsLiteral(
+                  payload
+              )}); window.__appendReplies && window.__appendReplies(${safeJsLiteral(
+                  floors
+              )}, ${payload.epoch})`
+            : `window.__renderArticle && window.__renderArticle(${safeJsLiteral(
+                  payload
+              )})`
+        void node.executeJavaScript(script).catch(console.error)
+    }, [])
 
     // Ensure CSS ::highlight styles exist once in document for expanded AI panel search
     useEffect(() => {
@@ -330,15 +359,20 @@ export const ArticleReaderSurface: React.FC<{
     useEffect(() => {
         webviewModalOpenRef.current = false
         setHoverUrl("")
-        setRepliesFloors(null)
-        setRepliesError("")
-        setRepliesLoading(false)
         try {
             webview.current?.stopFindInPage("clearSelection")
         } catch {}
         clearPanelHighlights()
         setMatchInfo({ active: 0, total: 0 })
     }, [item._id, loadWebpage, loadFull, webview, webviewModalOpenRef])
+
+    // Only reset Linux.do replies when item or local/webpage mode changes (preserve across loadFull)
+    useEffect(() => {
+        setRepliesFloors(null)
+        repliesFloorsRef.current = null
+        setRepliesError("")
+        setRepliesLoading(false)
+    }, [item._id, loadWebpage])
 
     // Focus and select find input when opened or Ctrl+F pressed again
     useEffect(() => {
@@ -370,13 +404,7 @@ export const ArticleReaderSurface: React.FC<{
             domReadyRef.current = true
             if (!loadWebpage) {
                 onLocalReady?.()
-                void node
-                    .executeJavaScript(
-                        `window.__renderArticle && window.__renderArticle(${safeJsLiteral(
-                            latestPayloadRef.current
-                        )})`
-                    )
-                    .catch(console.error)
+                mountArticleInWebview(node)
             }
         }
         const onUpdateTargetUrl = (e: Event & { url?: string }) => {
@@ -438,18 +466,13 @@ export const ArticleReaderSurface: React.FC<{
         showWebview,
         onLocalReady,
         webviewModalOpenRef,
+        mountArticleInWebview,
     ])
 
     useEffect(() => {
         const node = webview.current
         if (!node || loadWebpage || !showWebview || !domReadyRef.current) return
-        void node
-            .executeJavaScript(
-                `window.__renderArticle && window.__renderArticle(${safeJsLiteral(
-                    latestPayloadRef.current
-                )})`
-            )
-            .catch(console.error)
+        mountArticleInWebview(node)
     }, [
         webview,
         loadWebpage,
@@ -460,6 +483,7 @@ export const ArticleReaderSurface: React.FC<{
         dateText,
         articleHtml,
         locale,
+        mountArticleInWebview,
     ])
 
     useEffect(() => {
@@ -588,6 +612,8 @@ export const ArticleReaderSurface: React.FC<{
 
     const currentItemIdRef = useRef(item._id)
     currentItemIdRef.current = item._id
+    const loadWebpageRef = useRef(loadWebpage)
+    loadWebpageRef.current = loadWebpage
 
     const handleLoadReplies = async () => {
         const targetId = item._id
@@ -595,13 +621,15 @@ export const ArticleReaderSurface: React.FC<{
         setRepliesError("")
         try {
             const floors = await window.personal.linuxDoReplies(item.link)
-            if (currentItemIdRef.current !== targetId) return
+            if (currentItemIdRef.current !== targetId || loadWebpageRef.current)
+                return
             setRepliesFloors(floors)
+            repliesFloorsRef.current = floors
             if (webview.current && domReadyRef.current) {
                 await webview.current.executeJavaScript(
                     `window.__appendReplies && window.__appendReplies(${safeJsLiteral(
                         floors
-                    )})`
+                    )}, ${renderEpochRef.current})`
                 )
             }
         } catch (err) {
